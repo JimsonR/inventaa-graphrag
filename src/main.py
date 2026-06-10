@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 
-from src.endpoints.retriever_api import router as retriever_router
+# from src.endpoints.retriever_api import router as retriever_router
 from src.endpoints.router_api import router as message_router
 from src.services.retrieve import initialize_agent
 
@@ -54,7 +54,7 @@ def root_redirect():
     return RedirectResponse(url="/docs")
 
 # Include API endpoints
-app.include_router(retriever_router)
+# app.include_router(retriever_router)
 app.include_router(message_router)
 
 if __name__ == "__main__":
