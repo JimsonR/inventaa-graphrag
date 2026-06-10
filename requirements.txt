@@ -2,7 +2,6 @@ fastapi
 uvicorn
 pydantic
 neo4j
-langchain
 langchain-openai
 langchain-neo4j
 langchain-classic
