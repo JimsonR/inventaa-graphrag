@@ -8,4 +8,3 @@ langchain-openai
 langchain-neo4j
 langchain-huggingface
 langchain-classic
-sentence-transformers
