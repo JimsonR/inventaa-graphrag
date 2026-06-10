@@ -37,7 +37,7 @@ def initialize_agent() -> None:
     from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
     from langchain_core.prompts import PromptTemplate
     from langchain_core.tools import Tool
-    from langchain_classic.agents import create_openai_tools_agent, AgentExecutor
+    from langchain.agents import create_openai_tools_agent, AgentExecutor
     from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
     # 1. Initialize Azure OpenAI LLM

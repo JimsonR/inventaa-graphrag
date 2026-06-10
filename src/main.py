@@ -5,7 +5,10 @@ Main application entry point.
 """
 
 import logging
-import uvicorn
+try:
+    import uvicorn
+except ImportError:
+    pass
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
