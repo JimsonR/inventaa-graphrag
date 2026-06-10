@@ -8,12 +8,12 @@ import os
 import json
 import logging
 from typing import Optional, List
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
 
 import warnings
 warnings.filterwarnings("ignore")
 
-load_dotenv()
+# load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Singletons
