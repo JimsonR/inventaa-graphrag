@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+pydantic
+neo4j
+python-dotenv
+langchain
+langchain-openai
+langchain-neo4j
+langchain-huggingface
+langchain-classic
+sentence-transformers

@@ -1,0 +1,21 @@
+# Virtual Environments
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+
+# Environment Variables (CRITICAL)
+.env
+.env.*
+
+# IDEs and Editors
+.vscode/
+.idea/
+
+# Temporary / Scratch Files
+scratch/
+test_agent.py
+debug_neo4j_delivery.py
+debug_neo4j_delivery_specifics.py
+embed_policies.py
