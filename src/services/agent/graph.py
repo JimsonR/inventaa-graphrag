@@ -127,7 +127,7 @@ If the answer is unsatisfactory, output feedback on what the agent should do dif
 # Global compiled graph
 _agent_executor = None
 
-def ask_agent(query_text: str):
+def ask_agent(query_text: str, tenant_id: str = None):
     """
     Invokes the agent with the user's query.
     Returns a parsed JSON object (list/dict) for graph queries,
