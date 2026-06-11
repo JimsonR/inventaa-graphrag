@@ -37,8 +37,11 @@ def initialize_agent() -> None:
     from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
     from langchain_core.prompts import PromptTemplate
     from langchain_core.tools import Tool
-    from langchain.agents import create_openai_tools_agent, AgentExecutor
-    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+    from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage
+    from typing import Annotated, Sequence, TypedDict
+    import operator
+    from langgraph.graph import StateGraph, END
+    from langgraph.prebuilt import ToolNode
 
     # 1. Initialize Azure OpenAI LLM
     llm = AzureChatOpenAI(
@@ -83,7 +86,7 @@ def initialize_agent() -> None:
         """
     )
 
-    def search_products_db(query: Optional[str] = None, min_price: Optional[int] = None, max_price: Optional[int] = None, sort_by: Optional[str] = None, limit: int = 5):
+    def search_products_db(query: Optional[str] = None, spec: Optional[str] = None, min_price: Optional[int] = None, max_price: Optional[int] = None, sort_by: Optional[str] = None, limit: int = 5):
         try:
             cypher_query = ""
             params = {"limit": limit}
@@ -92,7 +95,7 @@ def initialize_agent() -> None:
             if query:
                 tokens = [t.strip() + "~" for t in query.split() if t.strip() and t.lower() not in ["light", "lights", "lamp", "lamps", "product"]]
                 if tokens:
-                    lucene_query = " ".join(tokens)
+                    lucene_query = " AND ".join(tokens)
                     cypher_query += 'CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score\n'
                     params["lucene_query"] = lucene_query
                 else:
@@ -101,6 +104,11 @@ def initialize_agent() -> None:
                 cypher_query += "MATCH (p:Product)\n"
                 
             where_clauses = []
+            if spec:
+                cypher_query += "MATCH (p)-[:HAS_SPEC]->(s:Spec)\n"
+                where_clauses.append("(toLower(s.key) CONTAINS toLower($spec) OR toLower(s.value) CONTAINS toLower($spec))")
+                params["spec"] = spec
+                
             if min_price is not None:
                 where_clauses.append("p.price_num >= $min_price")
                 params["min_price"] = min_price
@@ -118,19 +126,20 @@ def initialize_agent() -> None:
                    p.review_count AS review_count, p.tenant AS tenant, p.feature_descriptions AS feature_descriptions
             """
             
-            if sort_by == "price_asc":
+            if sort_by in ["price_asc", "price_low"]:
                 cypher_query += "ORDER BY p.price_num ASC\n"
-            elif sort_by == "price_desc":
+            elif sort_by in ["price_desc", "price", "price_high"]:
                 cypher_query += "ORDER BY p.price_num DESC\n"
-            elif sort_by == "rating_desc":
+            elif sort_by in ["rating_desc", "rating", "highest_rated"]:
                 cypher_query += "ORDER BY p.rating_score DESC\n"
-            elif sort_by == "reviews_desc":
+            elif sort_by in ["reviews_desc", "reviews", "most_reviewed"]:
                 cypher_query += "ORDER BY p.review_count DESC\n"
             elif tokens:
                 cypher_query += "ORDER BY score DESC\n"
                 
             cypher_query += "LIMIT $limit"
             
+            logger.info(f"SearchProductsDatabase executing Cypher: {cypher_query} | Params: {params}")
             res = graph.query(cypher_query, params=params)
             
             if not res:
@@ -145,7 +154,7 @@ def initialize_agent() -> None:
             tokens = [t.strip() + "~" for t in product_name.split() if t.strip()]
             if not tokens:
                 return "Please provide a valid product name."
-            lucene_query = " ".join(tokens)
+            lucene_query = " AND ".join(tokens)
             
             cypher_query = """
             CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score
@@ -155,9 +164,10 @@ def initialize_agent() -> None:
             OPTIONAL MATCH (p)-[:HAS_SPEC]->(s:Spec)
             RETURN p.name AS name, p.price_num AS price, p.feature_descriptions AS feature_descriptions,
                    w.description AS warranty_info, w.duration_years AS warranty_duration,
-                   collect(s.name) AS specs
+                   collect(s.key + ': ' + s.value) AS specs
             """
             params = {"lucene_query": lucene_query}
+            logger.info(f"ProductDetailsDatabase executing Cypher: {cypher_query} | Params: {params}")
             res = graph.query(cypher_query, params=params)
             
             if not res:
@@ -202,7 +212,7 @@ def initialize_agent() -> None:
         StructuredTool.from_function(
             name="SearchProductsDatabase",
             func=search_products_db,
-            description="ALWAYS use this to SEARCH, LIST, or FILTER products by specifications, prices, or categories. Returns a JSON array of products.",
+            description="ALWAYS use this to SEARCH, LIST, or FILTER products by specifications, prices, or categories. Returns a JSON array of products. If the user searches by a specification (e.g. IP65, wattage), pass it in the 'spec' parameter.",
             return_direct=True
         ),
         StructuredTool.from_function(
@@ -223,7 +233,8 @@ def initialize_agent() -> None:
         )
     ]
 
-    system_prompt = """You are an e-commerce assistant for Inventaa. You have access to three tools and you MUST use them — you have NO general knowledge to offer.
+    global _system_prompt
+    _system_prompt = """You are an e-commerce assistant for Inventaa. You have access to three tools and you MUST use them — you have NO general knowledge to offer.
 
 ABSOLUTE RULES — NEVER BREAK THESE:
 1. You MUST call a tool before giving ANY answer. Never answer directly from your own knowledge.
@@ -234,19 +245,92 @@ ABSOLUTE RULES — NEVER BREAK THESE:
 6. If a tool returns content, use it to form your answer even if it is partial.
 
 TOOL SELECTION RULES:
-- Product search/listing/filtering (specs, category, price, wattage, IP rating) → GraphProductDatabase
-- General policies: returns, refunds, shipping timelines, cancellations, warranty claims → PolicyVectorDatabase
-- Product-specific questions: delivery time for a specific product, installation, troubleshooting, usage tips → ProductAdviceDatabase FIRST, then PolicyVectorDatabase if needed
+- Product search/listing/filtering (specs, category, price, wattage, IP rating) → SearchProductsDatabase
+- Specific product details (warranty duration, warranty information, features, price, specs of ONE specific product) → ProductDetailsDatabase
+- General policies: returns, refunds, shipping timelines, cancellations, general warranty claims → PolicyVectorDatabase
+- Product-specific FAQs: installation, troubleshooting, usage tips → ProductAdviceDatabase FIRST, then PolicyVectorDatabase if needed
 - Missing parts, damaged packages, order issues → PolicyVectorDatabase FIRST, then ProductAdviceDatabase if needed"""
 
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", system_prompt),
-        ("user", "{input}"),
-        MessagesPlaceholder(variable_name="agent_scratchpad"),
-    ])
+    class AgentState(TypedDict):
+        messages: Annotated[Sequence[BaseMessage], operator.add]
+        iterations: int
 
-    agent = create_openai_tools_agent(llm, tools, prompt)
-    _agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True, return_intermediate_steps=False)
+    tool_node = ToolNode(tools)
+    llm_with_tools = llm.bind_tools(tools)
+
+    def agent_node(state: AgentState):
+        response = llm_with_tools.invoke(state["messages"])
+        return {"messages": [response]}
+
+    def evaluate_node(state: AgentState):
+        messages = state["messages"]
+        last_message = messages[-1]
+        
+        if state.get("iterations", 0) >= 3:
+            return {"messages": []}
+            
+        user_query = ""
+        for msg in messages:
+            if isinstance(msg, HumanMessage) and not msg.content.startswith("Feedback:"):
+                user_query = msg.content
+                break
+
+        eval_prompt = f"""You are a strict QA evaluator for Inventaa.
+The user asked: "{user_query}"
+The agent provided the following answer:
+"{last_message.content}"
+
+Evaluate if the agent's answer completely and accurately answers the user's question based on the tools it used.
+If the agent says it doesn't have the information, check if it might have missed using a tool (e.g. using ProductAdviceDatabase when it should have used ProductDetailsDatabase to check product specs/warranty).
+If the answer is fully satisfactory, or if you are completely certain the information truly doesn't exist in any database, output ONLY the word "VALID".
+If the answer is unsatisfactory, output feedback on what the agent should do differently (e.g. "You didn't answer part two, try using the PolicyVectorDatabase" or "Try using ProductDetailsDatabase instead of ProductAdviceDatabase")."""
+
+        eval_res = llm.invoke([SystemMessage(content=eval_prompt)])
+        eval_content = eval_res.content.strip()
+        
+        if eval_content == "VALID":
+            return {"messages": []}
+        else:
+            feedback_msg = HumanMessage(content=f"Feedback: {eval_content}\nPlease retry and provide a better answer.")
+            return {"messages": [feedback_msg], "iterations": state.get("iterations", 0) + 1}
+
+    def should_continue(state: AgentState):
+        messages = state["messages"]
+        last_message = messages[-1]
+        if last_message.tool_calls:
+            return "tools"
+        return "evaluate"
+
+    def after_tool_node(state: AgentState):
+        from langchain_core.messages import ToolMessage
+        messages = state["messages"]
+        for msg in reversed(messages):
+            if not isinstance(msg, ToolMessage):
+                break
+            if msg.name == "SearchProductsDatabase":
+                return "end"
+        return "agent"
+
+    def should_loop(state: AgentState):
+        messages = state["messages"]
+        last_message = messages[-1]
+        if state.get("iterations", 0) >= 3:
+            return "end"
+        if isinstance(last_message, HumanMessage):
+            return "agent"
+        return "end"
+
+    workflow = StateGraph(AgentState)
+    workflow.add_node("agent", agent_node)
+    workflow.add_node("tools", tool_node)
+    workflow.add_node("evaluate", evaluate_node)
+
+    workflow.set_entry_point("agent")
+    workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", "evaluate": "evaluate"})
+    workflow.add_conditional_edges("tools", after_tool_node, {"end": END, "agent": "agent"})
+    workflow.add_conditional_edges("evaluate", should_loop, {"agent": "agent", "end": END})
+
+    _agent_executor = workflow.compile()
     logger.info("Hybrid RAG Agent Initialized!")
 
 def _resolve_collections(tenant_id: Optional[str], collection_name: str) -> List[str]:
@@ -279,8 +363,13 @@ def ask_agent(query_text: str, tenant_id: Optional[str] = None):
         initialize_agent()
     
     try:
-        response = _agent_executor.invoke({"input": query_text})
-        output = response.get("output", str(response))
+        from langchain_core.messages import SystemMessage, HumanMessage
+        
+        response = _agent_executor.invoke({
+            "messages": [SystemMessage(content=_system_prompt), HumanMessage(content=query_text)],
+            "iterations": 0
+        })
+        output = response["messages"][-1].content
         # If the agent returned a JSON string, parse it into a real object
         try:
             return json.loads(output)
