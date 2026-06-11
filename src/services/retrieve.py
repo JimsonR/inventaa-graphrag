@@ -91,7 +91,7 @@ Schema:
 {schema}
 
 IMPORTANT RULES:
-1. ALWAYS use `toLower(toString(property))` for string comparisons or `CONTAINS` to prevent TypeErrors.
+1. NEVER use exact matches (`=`) for strings. ALWAYS use fuzzy matching with `toLower(toString(property)) CONTAINS toLower('value')` or case-insensitive regular expressions. When searching for a product by name, check both `p.name` and `c.name` with `OR` conditions for a SINGLE keyword (e.g., `toLower(p.name) CONTAINS 'athena' OR toLower(c.name) CONTAINS 'athena'`). If the user provides multiple keywords (like 'athena' and 'gate light'), you MUST combine them using `AND` (e.g., `(name/category CONTAINS 'athena') AND (name/category CONTAINS 'gate light')`) so you don't return irrelevant products.
 2. Categories are connected via `(c:Category)-[:HAS_PRODUCT]->(p:Product)`.
 3. Specs (like IP65) are connected via `(p:Product)-[:HAS_SPEC]->(s:Spec)`.
 4. ALWAYS return ALL of the following product fields when your query returns products:
@@ -101,25 +101,95 @@ IMPORTANT RULES:
 
 The question is:
 {question}"""
-    CYPHER_PROMPT = PromptTemplate(input_variables=["schema", "question"], template=CYPHER_GENERATION_TEMPLATE)
+    from typing import TypedDict, Any
+    from langgraph.graph import StateGraph, END
 
-    graph_chain = GraphCypherQAChain.from_llm(
-        cypher_llm=llm, qa_llm=llm, graph=graph, verbose=False,
-        cypher_prompt=CYPHER_PROMPT, return_intermediate_steps=False, allow_dangerous_requests=True,
-        return_direct=True  # Skip QA LLM synthesis — return raw Cypher results directly
-    )
+    class GraphQAState(TypedDict):
+        question: str
+        cypher_query: str
+        db_results: Any
+        validation_feedback: str
+        attempts: int
+        final_output: Any
+
+    def generate_cypher_node(state: GraphQAState):
+        schema = graph.schema
+        prompt = CYPHER_GENERATION_TEMPLATE.format(schema=schema, question=state["question"])
+        if state.get("validation_feedback"):
+            prompt += f"\n\nPrevious attempt failed. Feedback: {state['validation_feedback']}\nFix the query and return ONLY the raw Cypher query string without markdown block formatting."
+        else:
+            prompt += "\n\nReturn ONLY the raw Cypher query string without markdown block formatting."
+            
+        res = llm.invoke(prompt)
+        cypher = res.content.strip().replace("```cypher", "").replace("```", "").strip()
+        return {"cypher_query": cypher, "attempts": state.get("attempts", 0) + 1}
+        
+    def execute_cypher_node(state: GraphQAState):
+        cypher = state["cypher_query"]
+        try:
+            res = graph.query(cypher)
+            return {"db_results": res}
+        except Exception as e:
+            return {"db_results": str(e)}
+
+    def validate_cypher_node(state: GraphQAState):
+        results = state["db_results"]
+        # Ask LLM if the result makes sense for the question and isn't an error string
+        prompt = f"""Question: {state['question']}
+Cypher Query Executed: {state['cypher_query']}
+Results from DB: {results}
+
+If the results are a database syntax error string, or if they are completely empty and you think the query was too restrictive, provide feedback on how to fix the cypher query.
+If the query returned too many irrelevant products (e.g. returning all gate lights when the user asked for a specific 'Athena' light), provide feedback to make the Cypher query stricter (e.g., use AND instead of OR for multiple keywords).
+If the results successfully answer the question, do not contain irrelevant items, or if you believe empty results are genuinely correct because the product doesn't exist, just output 'VALID'.
+Otherwise, output the feedback to correct the Cypher query. Return ONLY your feedback or the word VALID."""
+        
+        res = llm.invoke(prompt).content.strip()
+        if res == "VALID":
+            if not results or isinstance(results, str):
+                 return {"final_output": "No matching products found in the database for your query.", "validation_feedback": ""}
+            
+            cleaned = [
+                {k.split(".", 1)[-1]: v for k, v in row.items()}
+                for row in results
+            ]
+            return {"final_output": json.dumps(cleaned, indent=2, ensure_ascii=False), "validation_feedback": ""}
+        else:
+            return {"validation_feedback": res}
+
+    def should_continue(state: GraphQAState):
+        if state.get("final_output"):
+            return END
+        if state.get("attempts", 0) >= 3:
+            return END
+        return "generate_cypher"
+
+    workflow = StateGraph(GraphQAState)
+    workflow.add_node("generate_cypher", generate_cypher_node)
+    workflow.add_node("execute_cypher", execute_cypher_node)
+    workflow.add_node("validate_cypher", validate_cypher_node)
+    
+    workflow.set_entry_point("generate_cypher")
+    workflow.add_edge("generate_cypher", "execute_cypher")
+    workflow.add_edge("execute_cypher", "validate_cypher")
+    workflow.add_conditional_edges("validate_cypher", should_continue)
+    
+    cypher_graph = workflow.compile()
 
     def query_graph(query: str):
         try:
-            res = graph_chain.invoke({"query": query})["result"]
-            if not res:
+            res = cypher_graph.invoke({"question": query, "attempts": 0})
+            if res.get("final_output"):
+                return res["final_output"]
+            elif res.get("db_results") and not isinstance(res["db_results"], str):
+                # Fallback if validation failed but we hit max attempts and we have actual results
+                cleaned = [
+                    {k.split(".", 1)[-1]: v for k, v in row.items()}
+                    for row in res["db_results"]
+                ]
+                return json.dumps(cleaned, indent=2, ensure_ascii=False)
+            else:
                 return "No matching products found in the database for your query."
-            # Strip the "p." prefix from Neo4j keys (e.g. "p.sku" -> "sku")
-            cleaned = [
-                {k.split(".", 1)[-1]: v for k, v in row.items()}
-                for row in res
-            ]
-            return json.dumps(cleaned, indent=2, ensure_ascii=False)
         except Exception as e:
             return f"Error querying graph: {e}"
 
