@@ -83,115 +83,98 @@ def initialize_agent() -> None:
         """
     )
 
-    # 5. Build Graph Cypher Chain
-    CYPHER_GENERATION_TEMPLATE = """Task: Generate Cypher statement to query a graph database.
-Instructions:
-Use only the provided relationship types and properties in the schema.
-Schema:
-{schema}
-
-IMPORTANT RULES:
-1. NEVER use exact matches (`=`) for strings. ALWAYS use fuzzy matching with `toLower(toString(property)) CONTAINS toLower('value')` or case-insensitive regular expressions. When searching for a product by name, check both `p.name` and `c.name` with `OR` conditions for a SINGLE keyword (e.g., `toLower(p.name) CONTAINS 'athena' OR toLower(c.name) CONTAINS 'athena'`). If the user provides multiple keywords (like 'athena' and 'gate light'), you MUST combine them using `AND` (e.g., `(name/category CONTAINS 'athena') AND (name/category CONTAINS 'gate light')`) so you don't return irrelevant products.
-2. Categories are connected via `(c:Category)-[:HAS_PRODUCT]->(p:Product)`.
-3. Specs (like IP65) are connected via `(p:Product)-[:HAS_SPEC]->(s:Spec)`.
-4. ALWAYS return ALL of the following product fields when your query returns products:
-   p.sku, p.name, p.price_num, p.regular_price, p.discount_percentage,
-   p.image_url, p.url, p.rating, p.review_count, p.tenant, p.feature_descriptions
-   Do NOT return only p.url or a subset — always return all fields listed above.
-
-The question is:
-{question}"""
-    from typing import TypedDict, Any
-    from langgraph.graph import StateGraph, END
-
-    class GraphQAState(TypedDict):
-        question: str
-        cypher_query: str
-        db_results: Any
-        validation_feedback: str
-        attempts: int
-        final_output: Any
-
-    def generate_cypher_node(state: GraphQAState):
-        schema = graph.schema
-        prompt = CYPHER_GENERATION_TEMPLATE.format(schema=schema, question=state["question"])
-        if state.get("validation_feedback"):
-            prompt += f"\n\nPrevious attempt failed. Feedback: {state['validation_feedback']}\nFix the query and return ONLY the raw Cypher query string without markdown block formatting."
-        else:
-            prompt += "\n\nReturn ONLY the raw Cypher query string without markdown block formatting."
-            
-        res = llm.invoke(prompt)
-        cypher = res.content.strip().replace("```cypher", "").replace("```", "").strip()
-        return {"cypher_query": cypher, "attempts": state.get("attempts", 0) + 1}
-        
-    def execute_cypher_node(state: GraphQAState):
-        cypher = state["cypher_query"]
+    def search_products_db(query: Optional[str] = None, min_price: Optional[int] = None, max_price: Optional[int] = None, sort_by: Optional[str] = None, limit: int = 5):
         try:
-            res = graph.query(cypher)
-            return {"db_results": res}
-        except Exception as e:
-            return {"db_results": str(e)}
-
-    def validate_cypher_node(state: GraphQAState):
-        results = state["db_results"]
-        # Ask LLM if the result makes sense for the question and isn't an error string
-        prompt = f"""Question: {state['question']}
-Cypher Query Executed: {state['cypher_query']}
-Results from DB: {results}
-
-If the results are a database syntax error string, or if they are completely empty and you think the query was too restrictive, provide feedback on how to fix the cypher query.
-If the query returned too many irrelevant products (e.g. returning all gate lights when the user asked for a specific 'Athena' light), provide feedback to make the Cypher query stricter (e.g., use AND instead of OR for multiple keywords).
-If the results successfully answer the question, do not contain irrelevant items, or if you believe empty results are genuinely correct because the product doesn't exist, just output 'VALID'.
-Otherwise, output the feedback to correct the Cypher query. Return ONLY your feedback or the word VALID."""
-        
-        res = llm.invoke(prompt).content.strip()
-        if res == "VALID":
-            if not results or isinstance(results, str):
-                 return {"final_output": "No matching products found in the database for your query.", "validation_feedback": ""}
+            cypher_query = ""
+            params = {"limit": limit}
             
-            cleaned = [
-                {k.split(".", 1)[-1]: v for k, v in row.items()}
-                for row in results
-            ]
-            return {"final_output": json.dumps(cleaned, indent=2, ensure_ascii=False), "validation_feedback": ""}
-        else:
-            return {"validation_feedback": res}
-
-    def should_continue(state: GraphQAState):
-        if state.get("final_output"):
-            return END
-        if state.get("attempts", 0) >= 3:
-            return END
-        return "generate_cypher"
-
-    workflow = StateGraph(GraphQAState)
-    workflow.add_node("generate_cypher", generate_cypher_node)
-    workflow.add_node("execute_cypher", execute_cypher_node)
-    workflow.add_node("validate_cypher", validate_cypher_node)
-    
-    workflow.set_entry_point("generate_cypher")
-    workflow.add_edge("generate_cypher", "execute_cypher")
-    workflow.add_edge("execute_cypher", "validate_cypher")
-    workflow.add_conditional_edges("validate_cypher", should_continue)
-    
-    cypher_graph = workflow.compile()
-
-    def query_graph(query: str):
-        try:
-            res = cypher_graph.invoke({"question": query, "attempts": 0})
-            if res.get("final_output"):
-                return res["final_output"]
-            elif res.get("db_results") and not isinstance(res["db_results"], str):
-                # Fallback if validation failed but we hit max attempts and we have actual results
-                cleaned = [
-                    {k.split(".", 1)[-1]: v for k, v in row.items()}
-                    for row in res["db_results"]
-                ]
-                return json.dumps(cleaned, indent=2, ensure_ascii=False)
+            tokens = []
+            if query:
+                tokens = [t.strip() + "~" for t in query.split() if t.strip() and t.lower() not in ["light", "lights", "lamp", "lamps", "product"]]
+                if tokens:
+                    lucene_query = " ".join(tokens)
+                    cypher_query += 'CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score\n'
+                    params["lucene_query"] = lucene_query
+                else:
+                    cypher_query += "MATCH (p:Product)\n"
             else:
-                return "No matching products found in the database for your query."
+                cypher_query += "MATCH (p:Product)\n"
+                
+            where_clauses = []
+            if min_price is not None:
+                where_clauses.append("p.price_num >= $min_price")
+                params["min_price"] = min_price
+            if max_price is not None:
+                where_clauses.append("p.price_num <= $max_price")
+                params["max_price"] = max_price
+                
+            if where_clauses:
+                cypher_query += "WHERE " + " AND ".join(where_clauses) + "\n"
+                
+            cypher_query += """
+            RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num, 
+                   p.regular_price AS regular_price, p.discount_percentage AS discount_percentage, 
+                   p.image_url AS image_url, p.url AS url, p.rating_score AS rating, 
+                   p.review_count AS review_count, p.tenant AS tenant, p.feature_descriptions AS feature_descriptions
+            """
+            
+            if sort_by == "price_asc":
+                cypher_query += "ORDER BY p.price_num ASC\n"
+            elif sort_by == "price_desc":
+                cypher_query += "ORDER BY p.price_num DESC\n"
+            elif sort_by == "rating_desc":
+                cypher_query += "ORDER BY p.rating_score DESC\n"
+            elif sort_by == "reviews_desc":
+                cypher_query += "ORDER BY p.review_count DESC\n"
+            elif tokens:
+                cypher_query += "ORDER BY score DESC\n"
+                
+            cypher_query += "LIMIT $limit"
+            
+            res = graph.query(cypher_query, params=params)
+            
+            if not res:
+                return "[]"
+                
+            return json.dumps(res, indent=2, ensure_ascii=False)
         except Exception as e:
             return f"Error querying graph: {e}"
+
+    def get_product_details_db(product_name: str):
+        try:
+            tokens = [t.strip() + "~" for t in product_name.split() if t.strip()]
+            if not tokens:
+                return "Please provide a valid product name."
+            lucene_query = " ".join(tokens)
+            
+            cypher_query = """
+            CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score
+            WITH p, score
+            ORDER BY score DESC LIMIT 1
+            OPTIONAL MATCH (p)-[:HAS_WARRANTY]->(w:Warranty)
+            OPTIONAL MATCH (p)-[:HAS_SPEC]->(s:Spec)
+            RETURN p.name AS name, p.price_num AS price, p.feature_descriptions AS feature_descriptions,
+                   w.description AS warranty_info, w.duration_years AS warranty_duration,
+                   collect(s.name) AS specs
+            """
+            params = {"lucene_query": lucene_query}
+            res = graph.query(cypher_query, params=params)
+            
+            if not res:
+                return "Product not found."
+                
+            product = res[0]
+            output = f"Product Name: {product.get('name')}\n"
+            output += f"Price: {product.get('price')}\n"
+            output += f"Features: {product.get('feature_descriptions')}\n"
+            if product.get('warranty_info'):
+                output += f"Warranty: {product.get('warranty_info')} ({product.get('warranty_duration')} years)\n"
+            if product.get('specs'):
+                output += f"Specifications: {', '.join(product.get('specs'))}\n"
+                
+            return output.encode("ascii", errors="ignore").decode("ascii")
+        except Exception as e:
+            return f"Error getting product details: {e}"
 
     def query_policies(query: str):
         # We search the dedicated policy index first
@@ -213,22 +196,30 @@ Otherwise, output the feedback to correct the Cypher query. Return ONLY your fee
         text = "\n\n".join([doc.page_content for doc, _ in results])
         return text.encode("ascii", errors="ignore").decode("ascii")
 
+    from langchain_core.tools import StructuredTool
+
     tools = [
-        Tool(
-            name="GraphProductDatabase",
-            func=query_graph,
-            description="ALWAYS use this to find a list of products, filter by specifications (like waterproof, IP65, wattage), prices, or categories. It queries the structural database.",
+        StructuredTool.from_function(
+            name="SearchProductsDatabase",
+            func=search_products_db,
+            description="ALWAYS use this to SEARCH, LIST, or FILTER products by specifications, prices, or categories. Returns a JSON array of products.",
             return_direct=True
+        ),
+        StructuredTool.from_function(
+            name="ProductDetailsDatabase",
+            func=get_product_details_db,
+            description="Use this when the user asks a specific question about a product that requires a conversational sentence (e.g., 'What is the warranty of the Artoo light?', 'Tell me about its features.').",
+            return_direct=False
         ),
         Tool(
             name="PolicyVectorDatabase",
             func=query_policies,
-            description="Use this to answer questions about shipping policies, return policies, warranty rules, and general company guidelines."
+            description="Use this ONLY for general company-wide policies (e.g., general shipping, return, replacement, exchange, or warranty rules). DO NOT use this for finding product-specific features or warranties."
         ),
         Tool(
             name="ProductAdviceDatabase",
             func=query_product_faqs,
-            description="Use this to answer conversational advice, installation instructions, or troubleshooting for a specific product."
+            description="Use this to answer conversational questions, FAQs, installation instructions, usage suitability (e.g. 'Is it suitable for commercial properties?'), or troubleshooting for a specific product."
         )
     ]
 
