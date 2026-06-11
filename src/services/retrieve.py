@@ -96,7 +96,7 @@ IMPORTANT RULES:
 3. Specs (like IP65) are connected via `(p:Product)-[:HAS_SPEC]->(s:Spec)`.
 4. ALWAYS return ALL of the following product fields when your query returns products:
    p.sku, p.name, p.price_num, p.regular_price, p.discount_percentage,
-   p.image_url, p.url, p.review_count, p.tenant, p.feature_descriptions
+   p.image_url, p.url, p.rating, p.review_count, p.tenant, p.feature_descriptions
    Do NOT return only p.url or a subset — always return all fields listed above.
 
 The question is:
