@@ -87,59 +87,69 @@ def initialize_agent() -> None:
     )
 
     def search_products_db(query: Optional[str] = None, spec: Optional[str] = None, min_price: Optional[int] = None, max_price: Optional[int] = None, sort_by: Optional[str] = None, limit: int = 5):
+        """
+        Search and filter products from the graph database.
+        sort_by values: price_asc, price_desc, rating_desc, rating_asc, reviews_desc
+        """
         try:
             cypher_query = ""
             params = {"limit": limit}
-            
+
             tokens = []
             if query:
-                tokens = [t.strip() + "~" for t in query.split() if t.strip() and t.lower() not in ["light", "lights", "lamp", "lamps", "product"]]
+                tokens = [t.strip() + "~" for t in query.split() if t.strip() and t.lower() not in ["light", "lights", "lamp", "lamps", "product", "products", "show", "rated", "rating", "lowest", "highest", "best", "top"]]
                 if tokens:
                     lucene_query = " AND ".join(tokens)
                     cypher_query += 'CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score\n'
+                    cypher_query += 'WITH p, score\n'
                     params["lucene_query"] = lucene_query
                 else:
                     cypher_query += "MATCH (p:Product)\n"
             else:
                 cypher_query += "MATCH (p:Product)\n"
-                
+
             where_clauses = []
             if spec:
                 cypher_query += "MATCH (p)-[:HAS_SPEC]->(s:Spec)\n"
                 where_clauses.append("(toLower(s.key) CONTAINS toLower($spec) OR toLower(s.value) CONTAINS toLower($spec))")
                 params["spec"] = spec
-                
+
             if min_price is not None:
                 where_clauses.append("p.price_num >= $min_price")
                 params["min_price"] = min_price
             if max_price is not None:
                 where_clauses.append("p.price_num <= $max_price")
                 params["max_price"] = max_price
-                
+
             if where_clauses:
                 cypher_query += "WHERE " + " AND ".join(where_clauses) + "\n"
-                
-            cypher_query += """
-            RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num, 
-                   p.regular_price AS regular_price, p.discount_percentage AS discount_percentage, 
-                   p.image_url AS image_url, p.url AS url, p.rating_score AS rating, 
+
+            # Normalise sort_by synonym → canonical ORDER BY clause
+            sort_clause = ""
+            sort_by_lower = (sort_by or "").lower().strip()
+            if sort_by_lower in ["price_asc", "price_low", "cheapest", "lowest_price", "low_price"]:
+                sort_clause = "ORDER BY p.price_num ASC"
+            elif sort_by_lower in ["price_desc", "price_high", "expensive", "highest_price", "high_price"]:
+                sort_clause = "ORDER BY p.price_num DESC"
+            elif sort_by_lower in ["rating_desc", "rating", "highest_rated", "best_rated", "top_rated", "high_rating"]:
+                sort_clause = "ORDER BY p.rating_score DESC"
+            elif sort_by_lower in ["rating_asc", "lowest_rated", "low_rating", "worst_rated", "least_rated"]:
+                sort_clause = "ORDER BY p.rating_score ASC"
+            elif sort_by_lower in ["reviews_desc", "reviews", "most_reviewed", "most_popular"]:
+                sort_clause = "ORDER BY p.review_count DESC"
+            elif tokens:  # default: relevance score from full-text search
+                sort_clause = "ORDER BY score DESC"
+
+            cypher_query += f"""
+            RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
+                   p.regular_price AS regular_price, p.discount_percentage AS discount_percentage,
+                   p.image_url AS image_url, p.url AS url, p.rating_score AS rating,
                    p.review_count AS review_count, p.tenant AS tenant, p.feature_descriptions AS feature_descriptions
+            {sort_clause}
+            LIMIT $limit
             """
-            
-            if sort_by in ["price_asc", "price_low"]:
-                cypher_query += "ORDER BY p.price_num ASC\n"
-            elif sort_by in ["price_desc", "price", "price_high"]:
-                cypher_query += "ORDER BY p.price_num DESC\n"
-            elif sort_by in ["rating_desc", "rating", "highest_rated"]:
-                cypher_query += "ORDER BY p.rating_score DESC\n"
-            elif sort_by in ["reviews_desc", "reviews", "most_reviewed"]:
-                cypher_query += "ORDER BY p.review_count DESC\n"
-            elif tokens:
-                cypher_query += "ORDER BY score DESC\n"
-                
-            cypher_query += "LIMIT $limit"
-            
-            logger.info(f"SearchProductsDatabase executing Cypher: {cypher_query} | Params: {params}")
+
+            logger.info(f"SearchProductsDatabase | query={query!r} spec={spec!r} sort_by={sort_by!r} limit={limit} | Cypher: {cypher_query.strip()}")
             res = graph.query(cypher_query, params=params)
             
             if not res:
@@ -212,7 +222,18 @@ def initialize_agent() -> None:
         StructuredTool.from_function(
             name="SearchProductsDatabase",
             func=search_products_db,
-            description="ALWAYS use this to SEARCH, LIST, or FILTER products by specifications, prices, or categories. Returns a JSON array of products. If the user searches by a specification (e.g. IP65, wattage), pass it in the 'spec' parameter.",
+            description=(
+                "Use this to SEARCH, LIST, or FILTER products. "
+                "Parameters: "
+                "query (str) - product name or category keywords (e.g. 'garden bollard', 'gate light'); "
+                "spec (str) - technical specification to filter by (e.g. 'IP65', '12W', 'aluminum'); "
+                "min_price / max_price (int) - price range in INR; "
+                "sort_by (str) - one of: 'rating_desc' (highest rated), 'rating_asc' (lowest rated), "
+                "'price_asc' (cheapest), 'price_desc' (most expensive), 'reviews_desc' (most reviewed); "
+                "limit (int) - number of results (default 5). "
+                "IMPORTANT: for 'lowest rated' use sort_by='rating_asc'; for 'highest rated' use sort_by='rating_desc'. "
+                "Always pass spec separately from query — do NOT put spec values inside query."
+            ),
             return_direct=True
         ),
         StructuredTool.from_function(
@@ -234,22 +255,35 @@ def initialize_agent() -> None:
     ]
 
     global _system_prompt
-    _system_prompt = """You are an e-commerce assistant for Inventaa. You have access to three tools and you MUST use them — you have NO general knowledge to offer.
+    _system_prompt = """You are a GraphRAG-powered e-commerce assistant for Inventaa, backed by a Neo4j knowledge graph.
+You have four tools and MUST use them — you have NO general knowledge to offer.
 
 ABSOLUTE RULES — NEVER BREAK THESE:
-1. You MUST call a tool before giving ANY answer. Never answer directly from your own knowledge.
-2. If you do not find relevant information in the first tool, try a SECOND tool before giving up.
-3. If no tool returns relevant information, respond ONLY with: "I'm sorry, I don't have that information in our database."
-4. NEVER suggest, guess, or recommend anything that was not returned by a tool.
-5. NEVER say things like "I recommend contacting support" or "you should..." from your own reasoning.
-6. If a tool returns content, use it to form your answer even if it is partial.
+1. ALWAYS call a tool first. Never answer from your own knowledge.
+2. If the first tool returns no result, try a different tool before giving up.
+3. If no tool finds relevant info, respond ONLY: "I'm sorry, I don't have that information in our database."
+4. NEVER guess, invent, or recommend anything not returned by a tool.
+5. NEVER use conversational filler like "I recommend contacting support".
 
-TOOL SELECTION RULES:
-- Product search/listing/filtering (specs, category, price, wattage, IP rating) → SearchProductsDatabase
-- Specific product details (warranty duration, warranty information, features, price, specs of ONE specific product) → ProductDetailsDatabase
-- General policies: returns, refunds, shipping timelines, cancellations, general warranty claims → PolicyVectorDatabase
-- Product-specific FAQs: installation, troubleshooting, usage tips → ProductAdviceDatabase FIRST, then PolicyVectorDatabase if needed
-- Missing parts, damaged packages, order issues → PolicyVectorDatabase FIRST, then ProductAdviceDatabase if needed"""
+TOOL SELECTION:
+- Searching/listing/filtering products → SearchProductsDatabase
+  - Pass `spec` separately for technical specs (e.g. spec='IP65', spec='12W')
+  - For "lowest rated" → sort_by='rating_asc'
+  - For "highest rated" / "best rated" → sort_by='rating_desc'
+  - For "cheapest" / "lowest price" → sort_by='price_asc'
+  - For "most expensive" → sort_by='price_desc'
+  - For "most reviewed" / "most popular" → sort_by='reviews_desc'
+  - Pass `limit` explicitly when user says "show N products"
+- Single product detail (warranty, full features, price of one specific product) → ProductDetailsDatabase
+- Company policies (returns, refunds, shipping, cancellation, general warranty) → PolicyVectorDatabase
+- Product FAQs (installation, compatibility, troubleshooting, suitability) → ProductAdviceDatabase, then PolicyVectorDatabase if needed
+- Order issues (missing parts, damaged box) → PolicyVectorDatabase, then ProductAdviceDatabase if needed
+
+PARAMETER MAPPING EXAMPLES:
+- "show lowest rated 2 ip65 products" → SearchProductsDatabase(spec='IP65', sort_by='rating_asc', limit=2)
+- "cheapest garden lights under 1000" → SearchProductsDatabase(query='garden', max_price=1000, sort_by='price_asc')
+- "warranty of the Athena light" → ProductDetailsDatabase(product_name='Athena')
+- "what is the return policy" → PolicyVectorDatabase(query='return policy')"""
 
     class AgentState(TypedDict):
         messages: Annotated[Sequence[BaseMessage], operator.add]
