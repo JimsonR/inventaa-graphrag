@@ -262,12 +262,12 @@ MATCH (cat:Category {name: $category})-[:HAS_PRODUCT]->(p:Product)
             where_clauses.append("p.price_num <= $max_price")
             params["max_price"] = max_price
 
-        # Fuzzy name search on remaining tokens (only if no category matched)
-        lucene_query = None
-        if remaining_tokens and not final_category:
-            lucene_tokens = [t + "~" for t in remaining_tokens if t]
-            if lucene_tokens:
-                lucene_query = " AND ".join(lucene_tokens)
+        # Apply remaining tokens (like "7w") as text filters on the main query
+        if remaining_tokens:
+            for i, token in enumerate(remaining_tokens[:3]): # max 3 token filters
+                tok_param = f"rem_{i}"
+                params[tok_param] = token
+                where_clauses.append(f"(toLower(p.name) CONTAINS toLower(${tok_param}) OR toLower(p.feature_descriptions) CONTAINS toLower(${tok_param}))")
 
         if where_clauses:
             cypher_query += "WHERE " + " AND ".join(where_clauses) + "\n"
@@ -295,23 +295,6 @@ LIMIT $limit
 
         logger.info(f"SearchProductsDatabase Cypher:\n{cypher_query.strip()}\nParams: {params}")
         res = AgentConfig.graph.query(cypher_query, params=params)
-
-        # Fallback: if category matched but no results, try full-text on remaining tokens
-        if not res and lucene_query:
-            logger.info(f"Category search returned 0 results, falling back to full-text: {lucene_query}")
-            ft_query = f"""
-CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score
-WITH p, score
-{('WHERE ' + ' AND '.join(where_clauses)) if where_clauses else ''}
-RETURN DISTINCT p.sku AS sku, p.name AS name, p.price_num AS price_num,
-       p.regular_price AS regular_price, p.discount_percentage AS discount_percentage,
-       p.image_url AS image_url, p.url AS url, p.rating_score AS rating,
-       p.review_count AS review_count, p.tenant AS tenant, p.feature_descriptions AS feature_descriptions
-ORDER BY score DESC
-LIMIT $limit
-"""
-            params["lucene_query"] = lucene_query
-            res = AgentConfig.graph.query(ft_query, params=params)
 
         if not res:
             return "[]"
