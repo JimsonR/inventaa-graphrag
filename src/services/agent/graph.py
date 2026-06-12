@@ -1,6 +1,7 @@
 import json
 import logging
 import operator
+import sys
 from typing import Annotated, Sequence, TypedDict, Optional
 
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage, AIMessage
@@ -9,96 +10,12 @@ from langgraph.prebuilt import ToolNode
 
 from src.services.agent.config import AgentConfig
 from src.services.agent.tools import get_tools
-
-import sys
+from src.services.agent.routing import get_intent_config
 
 # Configure basic logging to ensure INFO statements show up in uvicorn
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
-
-_system_prompt = """You are an expert AI sales assistant for Inventaa, an Indian LED lighting brand.
-You MUST use tools for every response — never answer from your own knowledge.
-
-ABSOLUTE RULES:
-1. ALWAYS call a tool first. Never answer from your own knowledge.
-2. If the first tool returns no result, try a different tool before giving up.
-3. If no tool finds relevant info, say ONLY: "I'm sorry, I don't have that information in our database."
-4. NEVER guess, invent, or hallucinate product names, prices, specs, or policies.
-
-─────────────────────────────────────
-TOOL SELECTION GUIDE
-─────────────────────────────────────
-
-→ SearchProductsDatabase — Use for ANY of these:
-  • Listing or browsing products ("show me gate lights", "what solar lights do you have")
-  • Filtering by feature/spec ("waterproof outdoor lights", "warm white garden lights")
-  • Budget-based ("lights under ₹2000", "products within ₹10,000")
-  • Application/location ("lights for driveway", "lighting for villa entrance", "lights for garden")
-  • Recommendation requests ("suggest lights for a hotel", "best lights for heavy rain area")
-  • Comparison listings ("show me warm white AND cool white pathway lights")
-  • Sorting ("cheapest gate lights", "highest rated bollard lights")
-
-→ ProductDetailsDatabase — Use when the user asks about ONE specific NAMED product:
-  • Technical specs: wattage, lumens, dimensions, beam angle, material, IP rating, colour temperature
-  • "Is the Athena light available in warm white?"
-  • "What material is the Tacita fixture?"
-  • "What are the dimensions of the Mini Olivia?"
-  • "Does the Artoo light come with mounting hardware?"
-  • "What is the warranty on the Glenda light?"
-
-→ ProductAdviceDatabase — Use for general how-to / suitability / comparison advice (no specific product name):
-  • Installation: "Is installation easy?", "Can I install it myself?", "What is the mounting height?"
-  • Energy: "How long do LEDs last?", "Will LED reduce my electricity bill?", "What is the lifespan?"
-  • Comparison: "Which is better: warm white or cool white?", "What is the difference between bollard and pathway lights?"
-  • Suitability: "Can this be used for coastal areas?", "Can this be used for commercial spaces?"
-  • Smart/timer: "Can this be connected to a smart switch or timer?"
-  • Maintenance: "Which outdoor light requires least maintenance?"
-
-→ GeneralKnowledgeDatabase — Use for educational/comparison/concept questions about lighting:
-  • 'Wave-Free LED Panel Lights vs Traditional LED Panel Lights'
-  • 'What is the difference between bollard and pathway lights?'
-  • 'How to choose outdoor lighting for my home?'
-  • 'What is CRI (colour rendering index)?'
-  • 'How many lumens do I need for outdoor spaces?'
-  • 'Benefits of solar lights over wired lights'
-  • 'LED vs fluorescent: which is better?'
-  • 'What is IP rating?', 'How to read an LED spec sheet?'
-
-→ PolicyVectorDatabase — Use ONLY for business/operational questions:
-  • Returns, replacements, exchanges, damaged/wrong item
-  • Delivery time, shipping charges, order tracking, express shipping
-  • Warranty claim process, what is covered, replacement parts
-  • Bulk/dealer/contractor/distributor pricing
-  • Required documents for claims
-
-─────────────────────────────────────
-PARAMETER MAPPING EXAMPLES
-─────────────────────────────────────
-"show me indoor lights"               → SearchProductsDatabase(query='indoor lights', limit=10)
-"cheapest solar gate light"           → SearchProductsDatabase(query='solar gate', sort_by='price_asc')
-"best rated panel lights"             → SearchProductsDatabase(query='panel lights', sort_by='rating_desc')
-"lights for garden under ₹2000"       → SearchProductsDatabase(query='garden', max_price=2000)
-"waterproof warm white pathway lights"→ SearchProductsDatabase(query='pathway', feature='warm-white', spec='IP65')
-"lights for villa entrance"           → SearchProductsDatabase(query='gate entrance villa')
-"suggest for hotel landscape project" → SearchProductsDatabase(query='landscape garden bollard')
-"energy efficient lights under ₹5000" → SearchProductsDatabase(feature='energy-efficient', max_price=5000, sort_by='rating_desc')
-"IP65 street lights"                  → SearchProductsDatabase(query='street', spec='IP65')
-"lights for heavy rain area"          → SearchProductsDatabase(feature='waterproof')
-"Wave-Free vs Traditional LED panels"        → GeneralKnowledgeDatabase(query='wave-free LED panel traditional comparison')
-"benefits of solar outdoor lights"            → GeneralKnowledgeDatabase(query='benefits solar outdoor lights')
-"what is IP65 rating"                         → GeneralKnowledgeDatabase(query='IP65 rating waterproof outdoor')
-"warranty of the Athena light"               → ProductDetailsDatabase(product_name='Athena')
-"what material is the Tacita?"        → ProductDetailsDatabase(product_name='Tacita')
-"what is the return policy?"          → PolicyVectorDatabase(query='return policy')
-"how long does delivery take?"        → PolicyVectorDatabase(query='delivery time')
-"is installation easy?"               → ProductAdviceDatabase(query='installation')
-"can it be used near coastal areas?"  → ProductAdviceDatabase(query='coastal waterproof durability')
-
-PRODUCT CATEGORIES IN THE DATABASE:
-  Gate & Pillar Lights | Solar Lights | Outdoor Wall Lights | Bollard & Garden Lights
-  Street Lights | Flood Lights | Indoor & Ceiling Lights | Panel Lights
-  Pathway & Step Lights | Bulkhead Lights | Divine & Temple Lights | General Purpose Lights"""
 
 
 class AgentState(TypedDict):
@@ -107,8 +24,8 @@ class AgentState(TypedDict):
     last_product_search_result: Optional[str]
 
 
-def build_graph():
-    tools = get_tools()
+def build_graph(system_prompt: str, tools: list):
+    """Build a LangGraph agent using the given focused prompt and tool subset."""
     tool_node = ToolNode(tools)
     llm_with_tools = AgentConfig.llm.bind_tools(tools)
 
@@ -238,31 +155,37 @@ If in doubt, output "VALID"."""
     return workflow.compile()
 
 
-_agent_executor = None
+_initialized = False
 
 
 def ask_agent(query_text: str, tenant_id: str = None):
     """
     Invokes the agent with the user's query.
     Returns:
-      - A parsed JSON list/dict for product search queries (taken directly from tool output, not LLM synthesis).
+      - A parsed JSON list/dict for product search queries (taken directly from tool output).
       - A plain string for conversational/policy/detail answers.
     """
-    global _agent_executor
-    if _agent_executor is None:
+    global _initialized
+    if not _initialized:
         AgentConfig.initialize()
-        _agent_executor = build_graph()
+        _initialized = True
         logger.info("Hybrid RAG Agent Initialized!")
 
     try:
         logger.info(f"--- STARTING GRAPH EXECUTION FOR QUERY: '{query_text}' ---")
-        final_state = _agent_executor.invoke({
-            "messages": [SystemMessage(content=_system_prompt), HumanMessage(content=query_text)],
+
+        # Classify query intent → get focused prompt + only the relevant tools
+        all_tools = get_tools()
+        system_prompt, active_tools = get_intent_config(query_text, all_tools)
+        executor = build_graph(system_prompt, active_tools)
+
+        final_state = executor.invoke({
+            "messages": [SystemMessage(content=system_prompt), HumanMessage(content=query_text)],
             "iterations": 0,
             "last_product_search_result": None,
         })
 
-        # If there was a validated product search result, return IT directly (no LLM synthesis)
+        # If there was a validated product search result, return it directly (no LLM synthesis)
         product_result = final_state.get("last_product_search_result")
         if product_result:
             try:
@@ -271,7 +194,6 @@ def ask_agent(query_text: str, tenant_id: str = None):
                 return parsed_json
             except (json.JSONDecodeError, TypeError):
                 logger.warning("--- GRAPH FINISHED: Failed to parse tool JSON, falling back to conversational ---")
-                pass
 
         # Otherwise return the last AIMessage content (policy / FAQ / detail answer)
         last_ai = next(
@@ -279,15 +201,15 @@ def ask_agent(query_text: str, tenant_id: str = None):
             None
         )
         output = last_ai.content if last_ai else "I'm sorry, I encountered an error. Please try again."
-        
+
         try:
             parsed = json.loads(output)
-            logger.info(f"--- GRAPH FINISHED: Returning JSON from agent ---")
+            logger.info("--- GRAPH FINISHED: Returning JSON from agent ---")
             return parsed
         except (json.JSONDecodeError, TypeError):
             logger.info(f"--- GRAPH FINISHED: Returning text from agent ({len(output)} chars) ---")
             return output
 
     except Exception as e:
-        logger.error(f"Error invoking agent: {e}")
+        logger.error(f"Error invoking agent: {e}", exc_info=True)
         return "I'm sorry, I encountered an error while processing your request. Please try again later."
