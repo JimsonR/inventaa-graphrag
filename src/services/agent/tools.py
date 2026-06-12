@@ -267,7 +267,11 @@ MATCH (cat:Category {name: $category})-[:HAS_PRODUCT]->(p:Product)
             for i, token in enumerate(remaining_tokens[:3]): # max 3 token filters
                 tok_param = f"rem_{i}"
                 params[tok_param] = token
-                where_clauses.append(f"(toLower(p.name) CONTAINS toLower(${tok_param}) OR toLower(p.feature_descriptions) CONTAINS toLower(${tok_param}))")
+                where_clauses.append(
+                    f"(toLower(p.name) CONTAINS toLower(${tok_param}) "
+                    f"OR toLower(p.feature_descriptions) CONTAINS toLower(${tok_param}) "
+                    f"OR EXISTS {{ MATCH (p)-[:HAS_SPEC]->(s:Spec) WHERE toLower(s.value) CONTAINS toLower(${tok_param}) }})"
+                )
 
         if where_clauses:
             cypher_query += "WHERE " + " AND ".join(where_clauses) + "\n"
