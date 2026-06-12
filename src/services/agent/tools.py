@@ -25,73 +25,148 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 CATEGORY_KEYWORDS = {
+    # Gate & Pillar
     "gate": "Gate & Pillar Lights",
     "pillar": "Gate & Pillar Lights",
+    "post": "Gate & Pillar Lights",
+    "compound": "Gate & Pillar Lights",
+    "entrance": "Gate & Pillar Lights",
+    "boundary": "Gate & Pillar Lights",
+    # Solar
     "solar": "Solar Lights",
+    # Outdoor Wall
     "wall": "Outdoor Wall Lights",
+    "sconce": "Outdoor Wall Lights",
+    "elevation": "Outdoor Wall Lights",
+    # Bollard & Garden
     "bollard": "Bollard & Garden Lights",
     "garden": "Bollard & Garden Lights",
+    "lawn": "Bollard & Garden Lights",
+    "landscape": "Bollard & Garden Lights",
+    "driveway": "Bollard & Garden Lights",
+    "yard": "Bollard & Garden Lights",
+    "terrace": "Bollard & Garden Lights",
+    "balcony": "Bollard & Garden Lights",
+    "resort": "Bollard & Garden Lights",
+    "hotel": "Bollard & Garden Lights",
+    "villa": "Bollard & Garden Lights",
+    "community": "Bollard & Garden Lights",
+    # Street
     "street": "Street Lights",
     "road": "Street Lights",
+    "parking": "Street Lights",
+    # Flood
     "flood": "Flood Lights",
+    "stadium": "Flood Lights",
+    # Indoor & Ceiling
     "indoor": "Indoor & Ceiling Lights",
     "ceiling": "Indoor & Ceiling Lights",
+    "downlight": "Indoor & Ceiling Lights",
+    # Panel
     "panel": "Panel Lights",
+    # Pathway & Step
     "pathway": "Pathway & Step Lights",
     "step": "Pathway & Step Lights",
     "stairway": "Pathway & Step Lights",
+    "walkway": "Pathway & Step Lights",
+    "stair": "Pathway & Step Lights",
+    # Bulkhead
     "bulkhead": "Bulkhead Lights",
+    # Divine & Temple
     "divine": "Divine & Temple Lights",
     "temple": "Divine & Temple Lights",
     "religious": "Divine & Temple Lights",
     "god": "Divine & Temple Lights",
+    "pooja": "Divine & Temple Lights",
+    # General
     "general": "General Purpose Lights",
 }
 
 USECASE_KEYWORDS = {
     "gate": "gate-pillar",
     "pillar": "gate-pillar",
+    "entrance": "gate-pillar",
+    "compound": "gate-pillar",
+    "post": "gate-pillar",
     "indoor": "indoor-ceiling",
     "ceiling": "indoor-ceiling",
+    "downlight": "indoor-ceiling",
     "wall": "outdoor-wall",
+    "sconce": "outdoor-wall",
+    "elevation": "outdoor-wall",
     "garden": "garden-pathway",
+    "lawn": "garden-pathway",
+    "landscape": "garden-pathway",
+    "driveway": "garden-pathway",
+    "villa": "garden-pathway",
+    "terrace": "garden-pathway",
+    "balcony": "garden-pathway",
+    "resort": "garden-pathway",
+    "hotel": "garden-pathway",
+    "bollard": "garden-pathway",
     "pathway": "pathway-step",
+    "walkway": "pathway-step",
     "step": "pathway-step",
     "stairway": "pathway-step",
+    "stair": "pathway-step",
     "street": "street-road",
     "road": "street-road",
+    "parking": "street-road",
     "flood": "flood-area",
+    "stadium": "flood-area",
     "solar": "solar-outdoor",
     "temple": "religious-decorative",
     "divine": "religious-decorative",
     "religious": "religious-decorative",
+    "pooja": "religious-decorative",
 }
 
 FEATURE_KEYWORDS = {
     "solar": "solar-powered",
     "waterproof": "waterproof",
+    "weatherproof": "waterproof",
+    "rain": "waterproof",
+    "water": "waterproof",
+    "ip65": "IP65-rated",
+    "ip66": "IP66-rated",
+    "coastal": "rustproof",
     "motion": "motion-sensor",
     "sensor": "motion-sensor",
     "dimmable": "dimmable",
+    "dim": "dimmable",
     "warm": "warm-white",
     "cool": "cool-white",
     "neutral": "neutral-white",
     "3-in-1": "3-in-1-colour",
+    "colour": "3-in-1-colour",
+    "color": "3-in-1-colour",
     "aluminium": "aluminium-body",
     "aluminum": "aluminium-body",
+    "metal": "aluminium-body",
     "polycarbonate": "polycarbonate-body",
+    "plastic": "polycarbonate-body",
     "surface": "surface-mount",
     "rustproof": "rustproof",
+    "rust": "rustproof",
     "uv": "UV-protected",
+    "fade": "UV-protected",
+    "energy": "energy-efficient",
+    "efficient": "energy-efficient",
     "indoor": "indoor",
     "outdoor": "outdoor",
 }
 
 # Stop words to ignore when tokenizing queries
-_STOP_WORDS = {"light", "lights", "lamp", "lamps", "led", "product", "products",
-               "show", "me", "get", "find", "list", "give", "want", "need",
-               "rated", "rating", "lowest", "highest", "best", "top", "some",
-               "a", "an", "the", "for", "with", "of", "in", "and", "or"}
+_STOP_WORDS = {
+    "light", "lights", "lamp", "lamps", "led", "product", "products",
+    "show", "me", "get", "find", "list", "give", "want", "need",
+    "rated", "rating", "lowest", "highest", "best", "top", "some",
+    "a", "an", "the", "for", "with", "of", "in", "and", "or",
+    "is", "are", "what", "which", "how", "do", "can", "does",
+    "suggest", "recommend", "suitable", "use", "buy", "choose",
+    "my", "i", "we", "our", "this", "that", "under", "budget",
+    "within", "rs", "inr", "rupees", "good", "looking", "modern",
+}
 
 
 def _classify_query(query: str):
@@ -309,43 +384,81 @@ def get_tools():
             name="SearchProductsDatabase",
             func=search_products_db,
             description=(
-                "Search, list, or filter products from the graph database. "
-                "The tool auto-detects category, use case, and features from the query — you usually only need to pass `query`. "
-                "Parameters: "
-                "query (str) - natural language product query (e.g. 'indoor ceiling lights', 'solar gate lights', 'garden bollard'); "
-                "category (str) - explicit category override, one of: "
+                "Search, list, filter, or get product recommendations from the graph database. "
+                "Use this for: product listings, budget-based queries, application-based recommendations, "
+                "comparison queries (e.g. warm vs cool white), or any query that requires showing multiple products. "
+                "The tool auto-detects category, use case, and features from the query. "
+                "\n\nParameters:"
+                "\n- query (str): natural language query. Examples: 'indoor ceiling lights', 'solar gate lights', "
+                "'garden bollard', 'waterproof outdoor lights', 'driveway lights', 'landscape lights for villa'"
+                "\n- category (str): explicit category override, one of: "
                 "'Gate & Pillar Lights', 'Solar Lights', 'Outdoor Wall Lights', 'Bollard & Garden Lights', "
                 "'Street Lights', 'Flood Lights', 'Indoor & Ceiling Lights', 'Panel Lights', "
-                "'Pathway & Step Lights', 'Bulkhead Lights', 'Divine & Temple Lights', 'General Purpose Lights'; "
-                "use_case (str) - one of: gate-pillar, indoor-ceiling, outdoor-wall, garden-pathway, "
-                "pathway-step, street-road, flood-area, solar-outdoor, religious-decorative; "
-                "feature (str) - one of: solar-powered, waterproof, IP65-rated, motion-sensor, dimmable, "
-                "warm-white, cool-white, 3-in-1-colour, aluminium-body, polycarbonate-body, surface-mount; "
-                "spec (str) - technical spec filter (e.g. 'IP65', '12W'); "
-                "min_price / max_price (int) - price range in INR; "
-                "sort_by (str) - rating_desc, rating_asc, price_asc, price_desc, reviews_desc; "
-                "limit (int) - number of results (default 5). "
-                "EXAMPLES: "
-                "- 'show me indoor lights' → query='indoor lights' "
-                "- 'cheapest solar gate light' → query='solar gate', sort_by='price_asc' "
-                "- 'best rated panel lights' → query='panel lights', sort_by='rating_desc'"
+                "'Pathway & Step Lights', 'Bulkhead Lights', 'Divine & Temple Lights', 'General Purpose Lights'"
+                "\n- feature (str): one of: solar-powered, waterproof, IP65-rated, IP66-rated, motion-sensor, "
+                "dimmable, warm-white, cool-white, neutral-white, 3-in-1-colour, aluminium-body, "
+                "polycarbonate-body, surface-mount, wall-mount, rustproof, UV-protected, energy-efficient"
+                "\n- spec (str): technical spec filter. Examples: 'IP65', '12W', '18W', 'aluminium', 'beam angle'"
+                "\n- min_price / max_price (int): price range in INR (e.g. max_price=10000 for '₹10,000 budget')"
+                "\n- sort_by (str): rating_desc, rating_asc, price_asc, price_desc, reviews_desc"
+                "\n- limit (int): number of results (default 5)"
+                "\n\nEXAMPLES:"
+                "\n- 'show me indoor lights' → query='indoor lights'"
+                "\n- 'cheapest solar gate light' → query='solar gate', sort_by='price_asc'"
+                "\n- 'best rated panel lights' → query='panel lights', sort_by='rating_desc'"
+                "\n- 'lights for garden under ₹2000' → query='garden', max_price=2000"
+                "\n- 'waterproof outdoor lights with warm white' → query='outdoor warm waterproof'"
+                "\n- 'lights for a villa entrance and driveway' → query='gate driveway entrance'"
+                "\n- 'recommend lights for a hotel landscape' → query='landscape garden bollard'"
+                "\n- 'lights under ₹10000' → max_price=10000, sort_by='rating_desc'"
+                "\n- 'IP65 rated street lights' → query='street', spec='IP65'"
+                "\n- 'lights for heavy rainfall area' → feature='waterproof'"
+                "\n- 'warm white pathway lights' → query='pathway', feature='warm-white'"
+                "\n- 'energy efficient gate lights' → query='gate', feature='energy-efficient'"
             ),
             return_direct=False
         ),
         StructuredTool.from_function(
             name="ProductDetailsDatabase",
             func=get_product_details_db,
-            description="Use this when the user asks a specific question about ONE product requiring a conversational sentence (e.g., 'What is the warranty of the Artoo light?', 'Tell me about its features.').",
+            description=(
+                "Use this when the user asks about ONE specific named product's details: "
+                "warranty, wattage, dimensions, material, IP rating, beam angle, lumens, "
+                "mounting type, colour temperature, or any other technical specification. "
+                "Examples: 'What is the warranty of the Artoo light?', "
+                "'Is the Athena light available in warm white?', "
+                "'What material is the Tacita fixture made of?', "
+                "'What are the dimensions of the Mini Olivia light?'"
+            ),
             return_direct=False
         ),
         Tool(
             name="PolicyVectorDatabase",
             func=query_policies,
-            description="Use this ONLY for general company-wide policies (e.g., general shipping, return, replacement, exchange, or warranty rules). DO NOT use this for product-specific features."
+            description=(
+                "Use this for company-wide policies and general operational questions: "
+                "shipping, delivery time, delivery charges, order tracking, return policy, "
+                "replacement process, exchange process, warranty claim procedure, "
+                "bulk pricing, dealer/distributor pricing, contractor rates, "
+                "damaged product on arrival, wrong item received, required documents for claims. "
+                "Do NOT use for product-specific specs or features."
+            )
         ),
         Tool(
             name="ProductAdviceDatabase",
             func=query_product_faqs,
-            description="Use this to answer conversational FAQs, installation instructions, usage suitability, or troubleshooting for a specific product."
+            description=(
+                "Use this for general product FAQs, installation guidance, and suitability advice "
+                "NOT tied to a specific named product: "
+                "'Is installation easy?', 'Can I install it myself?', "
+                "'Does the package include mounting hardware?', "
+                "'Can it be connected to a timer or smart switch?', "
+                "'Is it suitable for coastal areas?', "
+                "'How long do LEDs last?', 'What is the expected lifespan?', "
+                "'Will switching to LED reduce electricity bill?', "
+                "'Which is better: warm white or cool white?', "
+                "'Which light requires the least maintenance?', "
+                "'Can this be used for commercial spaces?'"
+            )
         )
     ]
