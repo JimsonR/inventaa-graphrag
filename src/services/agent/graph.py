@@ -182,7 +182,7 @@ def ask_agent(query_text: str, tenant_id: str = None):
 
         # Classify query intent → get focused prompt + only the relevant tools
         all_tools = get_tools()
-        system_prompt, active_tools = get_intent_config(query_text, all_tools)
+        system_prompt, active_tools = get_intent_config(query_text, all_tools, llm=AgentConfig.llm)
         executor = build_graph(system_prompt, active_tools)
 
         final_state = executor.invoke({

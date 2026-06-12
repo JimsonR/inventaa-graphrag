@@ -17,6 +17,8 @@ Intent hierarchy (checked in order to avoid ambiguity):
 
 import logging
 from typing import Tuple, Optional
+from pydantic import BaseModel, Field
+from langchain_core.messages import SystemMessage, HumanMessage
 
 logger = logging.getLogger(__name__)
 
@@ -28,13 +30,7 @@ INTENT_ADVICE    = "advice"
 INTENT_KNOWLEDGE = "knowledge"
 
 # ─── Mapping: external upstream intent strings → internal intents ─────────────
-# The upstream router sends coarse intents like "FAQ_KNOWLEDGE".
-# All of them flow to the agent, so we classify within the agent.
-# If the upstream ever sends finer-grained intents, add them here:
-EXTERNAL_INTENT_MAP = {
-    # Future: "PRODUCT_SEARCH": INTENT_SEARCH,
-    # Future: "POLICY_QUESTION": INTENT_POLICY,
-}
+EXTERNAL_INTENT_MAP = {}
 
 # ─── Per-intent compact system prompts ────────────────────────────────────────
 _BASE_RULE = (
@@ -90,13 +86,9 @@ INTENT_TOOLS = {
     INTENT_KNOWLEDGE: ["GeneralKnowledgeDatabase", "ProductAdviceDatabase"],
 }
 
-# ─── Deterministic keyword lookup tables ──────────────────────────────────────
-# IMPORTANT: Each keyword must appear in AT MOST ONE table.
-# If a term is ambiguous (e.g., "install"), place it in the LOWER-priority table
-# and let higher-priority guards (SEARCH signals) override it first.
-
-# Step 1 — Hard SEARCH overrides: query clearly asks to find/list products
-# These take precedence over ALL other intents.
+# ─── Fast-Path Overrides ──────────────────────────────────────────────────────
+# Hard SEARCH overrides: query clearly asks to find/list products
+# These take precedence over LLM classification to save latency.
 _SEARCH_OVERRIDES = frozenset([
     "show me", "show ", "find me", "find products",
     "list products", "list lights", "get me",
@@ -112,148 +104,69 @@ _SEARCH_OVERRIDES = frozenset([
     "which lights should", "which light should",
 ])
 
-# Step 2 — POLICY: strictly operational/business topics
-_POLICY_EXACT = frozenset([
-    "return policy", "returns policy",
-    "replacement policy",
-    "exchange policy",
-    "refund policy",
-    "warranty claim", "claim warranty", "how do i claim", "how to claim",
-    "track order", "order status", "track my order",
-    "cancel order", "cancel my order", "cancellation policy",
-    "bulk order", "bulk price", "bulk discount", "bulk purchase",
-    "dealer pricing", "distributor pricing", "contractor pricing",
-    "wholesale price", "wholesale pricing",
-    "damaged product", "damaged item", "damaged on arrival",
-    "wrong item", "wrong product", "received wrong",
-    "broken on arrival",
-    "how much does delivery", "delivery charge", "delivery cost",
-    "shipping charge", "shipping cost",
-    "cash on delivery", " cod ", "pay on delivery",
-    "payment method", "payment mode",
-    "invoice request",
-    "do you deliver to", "deliver to",
-    "express delivery", "fast delivery",
-])
+# ─── Agentic Intent Classifier ────────────────────────────────────────────────
 
-# Step 3 — KNOWLEDGE: educational/comparison articles (no product-specific name)
-_KNOWLEDGE_EXACT = frozenset([
-    " vs ", " versus ",
-    "compare to", "comparison between", "difference between",
-    "which is better", "what is better", "which one is better",
-    "wave-free", "wave free",
-    "how to choose lighting", "how do i choose lighting", "guide to lighting",
-    "benefits of solar", "advantages of solar",
-    "benefits of led", "advantages of led",
-    "disadvantages of", "drawbacks of",
-    "what is ip rating", "what does ip rating mean",
-    "what is cri", "colour rendering index", "color rendering index",
-    "what is a lumen", "lumen guide", "how many lumens",
-    "led vs ", "vs led",
-    "fluorescent vs", "halogen vs", "incandescent vs",
-    "solar vs wired", "wired vs solar",
-    "types of led lighting", "types of outdoor lighting",
-    "lighting guide", "lighting 101",
-    "why use led", "how does led work", "how led works",
-    "what is kelvin", "colour temperature guide",
-    "what is beam angle",
-])
+class IntentClassification(BaseModel):
+    """Schema for routing a user query to the correct intent."""
+    intent: str = Field(
+        ...,
+        description="The classified intent. Must be one of: 'search', 'detail', 'policy', 'advice', or 'knowledge'."
+    )
 
-# Step 4 — ADVICE: installation / suitability / general FAQ (no product name)
-_ADVICE_EXACT = frozenset([
-    "is installation easy", "easy to install",
-    "can i install it myself", "can i install myself", "diy installation",
-    "self install", "install it myself",
-    "how to install", "installation guide", "mounting guide",
-    "how to mount",
-    "can it be connected to a timer", "can it be connected to smart",
-    "smart switch compatible", "timer compatible", "works with timer",
-    # Suitability — general (safe: search queries use "lights for" → hits SEARCH first)
-    "suitable for",
-    "suitable for coastal", "near coastal", "near sea", "salt air",
-    "suitable for harsh", "suitable for weather", "suitable for heavy",
-    "suitable for wet", "suitable for outdoor", "suitable for indoor",
-    "suitable for commercial", "can it be used for commercial",
-    "can it be used near", "can it be used in",
-    # Durability
-    "can it withstand", "can this withstand", "withstand rain",
-    "withstand weather", "withstand harsh", "withstand heavy",
-    "waterproof rating", "is it waterproof", "is it rustproof",
-    "is it uv", "uv resistant", "fade resistant", "fade proof",
-    "how long do leds last", "lifespan of led", "led lifespan",
-    "how long will it last", "how many years",
-    "will it reduce electricity", "reduce electricity bill",
-    "save on electricity", "energy saving benefit",
-    "maintenance required", "how to maintain", "how to clean the light",
-    "does it come with mounting", "included in the package",
-    "what is the mounting height", "recommended mounting height",
-    "can i use it outdoors", "outdoor safe", "weather resistant",
-])
+_ROUTER_SYSTEM_PROMPT = """You are an intent classification router for an LED lighting company.
+Classify the user's query into exactly ONE of the following intents:
 
-# Step 5 — DETAIL: named product + spec question
-# These are spec keywords that only make sense with a named product.
-_DETAIL_EXACT = frozenset([
-    "what wattages are available", "what wattage", "wattage available",
-    "available wattages", "wattage for this",
-    "what are the dimensions", "dimensions of", "size of the",
-    "what material", "material of the", "body material", "fixture material",
-    "made of", "what is it made of",
-    "beam angle of", "what beam angle",
-    "lumens does it", "lumen output of",
-    "colour temperature of", "color temperature of",
-    "available in warm white", "available in cool white", "available in colour",
-    "is it available in", "does it come in",
-    "ip rating of", "what ip rating does", "what ip does",
-    "warranty of", "warranty for this", "does it have warranty",
-    "has warranty", "warranty on the",
-    "specification of", "specs of", "spec sheet for",
-])
+- "search" : Browsing, finding, recommending, or filtering products by budget/rating/type.
+- "detail" : Asking for specific specs (wattage, dimensions, warranty, material) of a NAMED product.
+- "policy" : Questions about shipping, delivery, returns, warranty claims, or bulk pricing/dealer rates.
+- "advice" : Questions about installation, durability (waterproof, coastal, weather), or maintenance (NO named product).
+- "knowledge" : Educational concepts (what is IP rating/CRI/lumens), comparisons (LED vs solar, warm vs cool), or general buying guides.
 
+If the query does not perfectly match one, select the closest fit. If completely unrelated to lighting or company operations, default to "search".
+"""
 
-def classify_intent(query: str) -> str:
+def classify_intent(query: str, llm=None) -> str:
     """
-    Deterministic keyword-based intent classification.
-
-    Each lookup table has non-overlapping keywords.
-    Tables are checked in priority order — higher priority tables win.
-    Returns one of: INTENT_SEARCH, INTENT_DETAIL, INTENT_POLICY,
-                    INTENT_ADVICE, INTENT_KNOWLEDGE.
+    Classifies intent using a fast LLM call, with deterministic fast-paths for obvious searches.
     """
     q = query.lower()
 
-    # ── Priority 1: Hard SEARCH overrides ────────────────────────────────────
+    # 1. Fast-Path: Explicit search queries
     if any(kw in q for kw in _SEARCH_OVERRIDES):
-        logger.info(f"[Router] intent=search (override)  query={query!r}")
+        logger.info(f"[Router] intent=search (fast-path override)  query={query!r}")
         return INTENT_SEARCH
 
-    # ── Priority 2: POLICY ────────────────────────────────────────────────────
-    if any(kw in q for kw in _POLICY_EXACT):
-        logger.info(f"[Router] intent=policy  query={query!r}")
-        return INTENT_POLICY
+    # 2. Agentic Classification
+    if llm is None:
+        logger.warning("[Router] No LLM provided to classifier, defaulting to 'search'.")
+        return INTENT_SEARCH
 
-    # ── Priority 3: KNOWLEDGE ─────────────────────────────────────────────────
-    if any(kw in q for kw in _KNOWLEDGE_EXACT):
-        logger.info(f"[Router] intent=knowledge  query={query!r}")
-        return INTENT_KNOWLEDGE
+    try:
+        router = llm.with_structured_output(IntentClassification)
+        messages = [
+            SystemMessage(content=_ROUTER_SYSTEM_PROMPT),
+            HumanMessage(content=query)
+        ]
+        result = router.invoke(messages)
+        intent = result.intent.lower()
+        
+        # Validate LLM output against known intents
+        if intent not in INTENT_PROMPTS:
+            logger.warning(f"[Router] LLM returned unknown intent '{intent}', defaulting to 'search'.")
+            intent = INTENT_SEARCH
+            
+        logger.info(f"[Router] intent={intent} (agentic)  query={query!r}")
+        return intent
 
-    # ── Priority 4: ADVICE ────────────────────────────────────────────────────
-    if any(kw in q for kw in _ADVICE_EXACT):
-        logger.info(f"[Router] intent=advice  query={query!r}")
-        return INTENT_ADVICE
-
-    # ── Priority 5: DETAIL ────────────────────────────────────────────────────
-    if any(kw in q for kw in _DETAIL_EXACT):
-        logger.info(f"[Router] intent=detail  query={query!r}")
-        return INTENT_DETAIL
-
-    # ── Default: SEARCH ───────────────────────────────────────────────────────
-    logger.info(f"[Router] intent=search (default)  query={query!r}")
-    return INTENT_SEARCH
+    except Exception as e:
+        logger.error(f"[Router] Agentic classification failed: {e}. Defaulting to 'search'.")
+        return INTENT_SEARCH
 
 
 def get_intent_config(
     query: str,
     all_tools: list,
+    llm=None,
     explicit_intent: Optional[str] = None,
 ) -> Tuple[str, list]:
     """
@@ -262,20 +175,19 @@ def get_intent_config(
     Args:
         query: The user's message text.
         all_tools: Full list of Tool objects from get_tools().
+        llm: The language model used for agentic intent classification.
         explicit_intent: If provided, bypasses keyword classification entirely.
-                         Use this when the upstream router sends a reliable sub-intent.
     """
     if explicit_intent and explicit_intent in INTENT_PROMPTS:
         intent = explicit_intent
         logger.info(f"[Router] intent={intent} (explicit override)")
     else:
-        intent = classify_intent(query)
+        intent = classify_intent(query, llm=llm)
 
     prompt = INTENT_PROMPTS[intent]
     allowed_names = set(INTENT_TOOLS[intent])
     filtered = [t for t in all_tools if t.name in allowed_names]
 
-    # Safety: if filtering somehow left zero tools, fall back to all
     if not filtered:
         logger.warning(f"[Router] No tools matched intent={intent}, using all tools.")
         filtered = all_tools
