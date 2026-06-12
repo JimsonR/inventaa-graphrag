@@ -324,10 +324,27 @@ LIMIT $limit
 
 def get_product_details_db(product_name: str):
     try:
-        tokens = [t.strip() + "~" for t in product_name.split() if t.strip()]
-        if not tokens:
+        # --- Smarter tokenization ---
+        # Strip noise tokens (stop words, single chars, numbers-only, punctuation like "-")
+        _DETAIL_STOP = {
+            "led", "light", "lights", "lamp", "lamps", "the", "a", "an",
+            "and", "or", "for", "of", "in", "with", "by", "from",
+            "frontgate", "lighting", "design", "outdoor", "indoor",
+        }
+        raw_tokens = [t.strip(".,?!-–—/|") for t in product_name.split()]
+        # Keep tokens that are meaningful: length > 1, not stop, not pure numbers
+        good_tokens = [
+            t for t in raw_tokens
+            if t and len(t) > 1 and t.lower() not in _DETAIL_STOP and not t.isdigit()
+        ]
+
+        if not good_tokens:
             return "Please provide a valid product name."
-        lucene_query = " AND ".join(tokens)
+
+        # Build Lucene query: use first 3 good tokens with fuzzy (~), join remaining as plain phrases
+        lucene_tokens = [t + "~" for t in good_tokens[:3]]
+        lucene_query = " AND ".join(lucene_tokens)
+        logger.info(f"ProductDetailsDatabase | product_name={product_name!r} | lucene={lucene_query!r}")
 
         cypher_query = """
         CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score
@@ -335,12 +352,17 @@ def get_product_details_db(product_name: str):
         ORDER BY score DESC LIMIT 1
         OPTIONAL MATCH (p)-[:HAS_WARRANTY]->(w:Warranty)
         OPTIONAL MATCH (p)-[:HAS_SPEC]->(s:Spec)
-        RETURN p.name AS name, p.price_num AS price, p.feature_descriptions AS feature_descriptions,
+        OPTIONAL MATCH (p)-[:AVAILABLE_IN_WATTAGE]->(wo:WattageOption)
+        OPTIONAL MATCH (p)-[:AVAILABLE_IN_COLOR]->(co:ColorOption)
+        RETURN p.name AS name, p.price_num AS price,
+               p.feature_descriptions AS feature_descriptions,
                w.description AS warranty_info, w.duration_years AS warranty_duration,
-               collect(s.key + ': ' + s.value) AS specs
+               collect(DISTINCT s.key + ': ' + s.value) AS specs,
+               collect(DISTINCT wo.name) AS wattages,
+               collect(DISTINCT co.name) AS colors
         """
         params = {"lucene_query": lucene_query}
-        logger.info(f"ProductDetailsDatabase executing Cypher: {cypher_query} | Params: {params}")
+        logger.info(f"ProductDetailsDatabase Cypher: {cypher_query.strip()} | Params: {params}")
         res = AgentConfig.graph.query(cypher_query, params=params)
 
         if not res:
@@ -348,16 +370,39 @@ def get_product_details_db(product_name: str):
 
         product = res[0]
         output = f"Product Name: {product.get('name')}\n"
-        output += f"Price: {product.get('price')}\n"
-        output += f"Features: {product.get('feature_descriptions')}\n"
+        output += f"Price: Rs. {product.get('price')}\n"
+
+        # Wattage options
+        wattages = [w for w in (product.get('wattages') or []) if w]
+        if wattages:
+            output += f"Available Wattages: {', '.join(sorted(wattages))}\n"
+        else:
+            # Fallback: look in specs for wattage
+            watt_specs = [s for s in (product.get('specs') or []) if 'watt' in s.lower() or 'power' in s.lower()]
+            if watt_specs:
+                output += f"Wattage Info: {'; '.join(watt_specs)}\n"
+
+        # Color options
+        colors = [c for c in (product.get('colors') or []) if c]
+        if colors:
+            output += f"Available Colors: {', '.join(sorted(colors))}\n"
+
+        # Warranty
         if product.get('warranty_info'):
-            output += f"Warranty: {product.get('warranty_info')} ({product.get('warranty_duration')} years)\n"
+            output += f"Warranty: {product.get('warranty_info')}\n"
+
+        # All specs
         if product.get('specs'):
             output += f"Specifications: {', '.join(product.get('specs'))}\n"
 
+        if product.get('feature_descriptions'):
+            output += f"Features: {product.get('feature_descriptions')}\n"
+
         return output.encode("ascii", errors="ignore").decode("ascii")
     except Exception as e:
+        logger.error(f"Error in ProductDetailsDatabase: {e}", exc_info=True)
         return f"Error getting product details: {e}"
+
 
 
 def query_policies(query: str):
