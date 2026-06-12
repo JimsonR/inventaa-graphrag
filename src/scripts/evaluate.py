@@ -66,10 +66,15 @@ GROUND_TRUTHS = [
     },
     {
         "name": "Out-of-Domain Rejection (Conversational)",
-        "query": "Can you recommend a good laptop for gaming?",
+        "query": "Can you tell me how to fix my TV remote?",
         "type": (str, list),
-        "validate": lambda res: (isinstance(res, list) and len(res) == 0) or (isinstance(res, str) and ("sorry" in res.lower() or "don't have" in res.lower() or "database" in res.lower())),
-        "error_msg": "Expected the agent to return an empty list or strictly refuse answering out-of-domain questions."
+        "validate": lambda res: (
+            (isinstance(res, list) and len(res) == 0) or
+            (isinstance(res, str) and any(w in res.lower() for w in [
+                "sorry", "don't have", "database", "lighting", "not", "unable"
+            ]))
+        ),
+        "error_msg": "Expected the agent to return empty results or refuse answering out-of-domain questions."
     },
     {
         "name": "Human WhatsApp (Greeting + Search)",

@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Optional
 from langchain_core.tools import StructuredTool, Tool
 from src.services.agent.config import AgentConfig
@@ -431,14 +432,19 @@ def query_general_knowledge(query: str):
     Uses full-text search on the chunk_text index.
     """
     try:
-        # Build a simple Lucene query: take first 5 meaningful words
-        # Split on spaces AND hyphens so "Wave-Free" → ["Wave", "Free"]
         _STOP = {"the", "a", "an", "is", "are", "which", "one", "better", "vs",
                  "or", "and", "for", "of", "in", "with", "what", "how", "do",
                  "does", "can", "will", "between", "difference"}
+        # Strip Lucene special chars: + - && || ! ( ) { } [ ] ^ " ~ * ? : \ /
+        _LUCENE_SPECIAL = re.compile(r'[+\-&|!(){}\[\]^"~*?:\\/.,?!\'"–—]')
         raw_tokens = []
         for word in query.split():
-            raw_tokens.extend(word.strip(".,?!'\"-–—").split("-"))
+            # First split on hyphens (Wave-Free → Wave, Free), then clean each part
+            parts = word.split("-")
+            for part in parts:
+                clean = _LUCENE_SPECIAL.sub("", part).strip()
+                if clean:
+                    raw_tokens.append(clean)
         good = [t + "~" for t in raw_tokens if t and len(t) > 2 and t.lower() not in _STOP]
         if not good:
             return "No relevant articles found."
@@ -465,7 +471,6 @@ def query_general_knowledge(query: str):
             return "No relevant articles found."
 
         # Concatenate results, strip markdown images/links to reduce noise
-        import re
         combined = []
         for row in res:
             text = row.get("text") or ""

@@ -82,75 +82,107 @@ def classify_intent(query: str) -> str:
     """
     Fast heuristic intent classification.
     Returns one of the INTENT_* constants.
+
+    Priority order (highest wins):
+      1. Explicit search trigger words → SEARCH (prevent false positives downstream)
+      2. POLICY operational keywords
+      3. KNOWLEDGE educational/comparison keywords
+      4. ADVICE installation/suitability keywords
+      5. DETAIL product-specific spec keywords
+      6. Default → SEARCH
     """
     q = query.lower()
 
-    # --- POLICY: operational / business questions ---
+    # ── 1. EXPLICIT SEARCH SIGNALS (highest priority) ───────────────────────
+    # If query is clearly asking to show/find/list/recommend products, always SEARCH
+    _explicit_search = [
+        "show me", "show ", "find me", "find ",
+        "list ", "get me", "display", "browse",
+        "recommend", "suggest", "which lights", "what lights",
+        "lights for", "light for", "lamps for",
+        "under rs", "under inr", "under rupees", "within rs",
+        "cheapest", "lowest rated", "highest rated", "best rated",
+        "lowest price", "best price", "affordable",
+        "ip65 rated", "ip66 rated",          # "X rated products" = search filter
+        "products under", "lights under",
+    ]
+    if any(kw in q for kw in _explicit_search):
+        logger.info(f"[Router] intent=search (explicit trigger)  query={query!r}")
+        return INTENT_SEARCH
+
+    # ── 2. POLICY: operational / business questions ──────────────────────────
     _policy = [
-        "return", "refund", "ship", "deliver", "dispatch",
+        "return policy", "refund", "ship", "deliver", "dispatch",
         "warranty claim", "claim warranty", "how do i claim",
-        "replace", "replacement", "exchange", "track order",
-        "cancel", "cancellation", "bulk order", "bulk price",
+        "replacement policy", "exchange policy",
+        "track order", "order status",
+        "cancel order", "cancellation",
+        "bulk order", "bulk price", "bulk discount",
         "dealer", "distributor", "contractor", "wholesale",
         "damaged", "wrong item", "wrong product", "broken on arrival",
-        "how long does", "how much does delivery", "cash on delivery", "cod",
-        "emi", "payment", "invoice",
+        "how much does delivery", "cash on delivery", "cod",
+        "emi", "payment mode", "invoice",
     ]
     if any(kw in q for kw in _policy):
         logger.info(f"[Router] intent=policy  query={query!r}")
         return INTENT_POLICY
 
-    # --- KNOWLEDGE: educational / comparison / concept ---
+    # ── 3. KNOWLEDGE: educational / comparison / concept ────────────────────
+    # Only specific educational phrases — NOT bare spec terms like ip65 or lumens
     _knowledge = [
-        " vs ", " versus ", "compare", "comparison", "difference between",
-        "which is better", "what is better", "wave-free", "wave free",
-        "what is a ", "what are ", "how to choose", "how do i choose",
+        " vs ", " versus ", "compare to", "comparison between",
+        "difference between", "which is better", "what is better",
+        "wave-free", "wave free",
+        "how to choose", "how do i choose", "guide to",
         "benefits of", "advantages of", "disadvantages of",
-        "cri", "colour rendering", "color rendering",
-        "lumens", "lumen guide", "how many lumens",
-        "ip rating", "what is ip", "ip65", "ip66",
-        "led vs", "fluorescent", "halogen", "incandescent",
-        "solar vs", "wired vs", "types of lighting", "lighting guide",
-        "why led", "how does led", "what makes",
+        "what is ip rating", "what is ip", "what is cri",
+        "colour rendering index", "color rendering index",
+        "what is a lumen", "lumen guide", "how many lumens",
+        "led vs ", "vs led", "fluorescent vs", "halogen vs", "incandescent vs",
+        "solar vs wired", "wired vs solar",
+        "types of led", "types of outdoor", "types of lighting",
+        "lighting guide", "lighting 101",
+        "why use led", "how does led work", "how led works",
     ]
     if any(kw in q for kw in _knowledge):
         logger.info(f"[Router] intent=knowledge  query={query!r}")
         return INTENT_KNOWLEDGE
 
-    # --- ADVICE: installation / suitability / general FAQ ---
+    # ── 4. ADVICE: installation / suitability / FAQ ──────────────────────────
     _advice = [
-        "install", "installation", "mounting", "mount it",
+        "install", "installation", "how to mount", "mounting procedure",
         "can i install", "easy to install", "diy", "self install",
         "smart switch", "timer", "dimmer", "dimmable",
-        "coastal", "near sea", "salt air", "humidity",
-        "lifespan", "how long do", "how long will", "last for",
+        "coastal", "near sea", "salt air",
+        "lifespan", "how long do led", "how long will it last", "last for years",
         "electricity bill", "save electricity", "energy saving",
-        "maintenance", "maintain", "clean",
+        "maintenance", "maintain", "clean the light",
         "suitable for", "can it be used", "commercial use",
         "does it come with", "included in the box", "package include",
-        "recommended height", "mounting height",
+        "mounting height", "recommended height",
     ]
     if any(kw in q for kw in _advice):
         logger.info(f"[Router] intent=advice  query={query!r}")
         return INTENT_ADVICE
 
-    # --- DETAIL: user mentions a product name + asks a specific spec ---
+    # ── 5. DETAIL: named product + specific spec question ────────────────────
     _detail_specs = [
-        "wattage", "watt", "dimension", "size", "weight",
+        "wattage of", "wattage for", "what wattage",
+        "dimension", "size of", "weight of",
         "material", "aluminium", "aluminum", "polycarbonate", "stainless",
         "beam angle", "lumen output",
         "colour temperature", "color temperature", "warm white", "cool white",
         "neutral white", "3-in-1", "3 in 1",
-        "ip rating of", "ip of",
-        "warranty of", "warranty for", "does it have warranty",
+        "ip rating of", "ip of the", "what ip",
+        "warranty of", "warranty for", "has warranty", "does it have warranty",
         "available in", "come in", "specification of", "spec of",
-        "made of", "body material",
+        "made of", "body material", "fixture material",
     ]
     if any(kw in q for kw in _detail_specs):
         logger.info(f"[Router] intent=detail  query={query!r}")
         return INTENT_DETAIL
 
-    # --- Default: product search / recommendation ---
+    # ── 6. Default: product search / recommendation ──────────────────────────
     logger.info(f"[Router] intent=search (default)  query={query!r}")
     return INTENT_SEARCH
 

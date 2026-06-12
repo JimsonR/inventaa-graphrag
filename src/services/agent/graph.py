@@ -32,6 +32,12 @@ def build_graph(system_prompt: str, tools: list):
     def agent_node(state: AgentState):
         logger.info(f"[Agent Node] Invoking LLM with {len(state['messages'])} messages. Iteration: {state.get('iterations', 0)}")
         response = llm_with_tools.invoke(state["messages"])
+
+        # Guard: LangGraph crashes if the LLM returns neither text nor tool calls
+        if not response.tool_calls and not response.content:
+            logger.warning("[Agent Node] LLM returned empty response — injecting fallback message.")
+            response.content = "I'm sorry, I'm only able to assist with LED lighting products and related queries from Inventaa."
+
         if response.tool_calls:
             logger.info(f"[Agent Node] LLM decided to call tools: {[tc['name'] for tc in response.tool_calls]}")
         else:
