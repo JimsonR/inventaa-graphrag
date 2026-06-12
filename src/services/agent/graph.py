@@ -10,7 +10,12 @@ from langgraph.prebuilt import ToolNode
 from src.services.agent.config import AgentConfig
 from src.services.agent.tools import get_tools
 
+import sys
+
+# Configure basic logging to ensure INFO statements show up in uvicorn
+logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 _system_prompt = """You are a GraphRAG-powered e-commerce assistant for Inventaa, an Indian LED lighting brand.
 You have four tools and MUST use them -- you have NO general knowledge to offer.
@@ -59,16 +64,24 @@ def build_graph():
     llm_with_tools = AgentConfig.llm.bind_tools(tools)
 
     def agent_node(state: AgentState):
+        logger.info(f"[Agent Node] Invoking LLM with {len(state['messages'])} messages. Iteration: {state.get('iterations', 0)}")
         response = llm_with_tools.invoke(state["messages"])
+        if response.tool_calls:
+            logger.info(f"[Agent Node] LLM decided to call tools: {[tc['name'] for tc in response.tool_calls]}")
+        else:
+            logger.info(f"[Agent Node] LLM provided a direct response: {response.content[:100]}...")
         return {"messages": [response]}
 
     def capture_tool_output(state: AgentState):
         """After tools run, capture the raw SearchProductsDatabase output into state."""
+        logger.info("[Capture Node] Capturing tool outputs...")
         messages = state["messages"]
         last_product_result = state.get("last_product_search_result")
         for msg in reversed(messages):
-            if isinstance(msg, ToolMessage) and msg.name == "SearchProductsDatabase":
-                last_product_result = msg.content
+            if isinstance(msg, ToolMessage):
+                logger.info(f"[Capture Node] Tool '{msg.name}' returned output (length {len(msg.content)})")
+                if msg.name == "SearchProductsDatabase":
+                    last_product_result = msg.content
                 break
         return {"last_product_search_result": last_product_result}
 
@@ -81,8 +94,10 @@ def build_graph():
         """
         messages = state["messages"]
         iterations = state.get("iterations", 0)
+        logger.info(f"[Judge Node] Evaluating output at iteration {iterations}...")
 
         if iterations >= 3:
+            logger.warning("[Judge Node] Max iterations reached (3). Forcing completion.")
             return {}
 
         user_query = ""
@@ -124,11 +139,12 @@ If unsatisfactory, output a short feedback sentence."""
 
         eval_res = AgentConfig.llm.invoke([SystemMessage(content=eval_prompt)])
         eval_content = eval_res.content.strip()
-        logger.info(f"Judge decision: {eval_content[:120]}")
 
         if eval_content == "VALID":
+            logger.info(f"[Judge Node] Decision: VALID. Ending graph.")
             return {}
         else:
+            logger.info(f"[Judge Node] Decision: INVALID. Sending feedback: {eval_content}")
             feedback_msg = HumanMessage(
                 content=f"Feedback: {eval_content}\nPlease retry and provide a better answer."
             )
@@ -184,6 +200,7 @@ def ask_agent(query_text: str, tenant_id: str = None):
         logger.info("Hybrid RAG Agent Initialized!")
 
     try:
+        logger.info(f"--- STARTING GRAPH EXECUTION FOR QUERY: '{query_text}' ---")
         final_state = _agent_executor.invoke({
             "messages": [SystemMessage(content=_system_prompt), HumanMessage(content=query_text)],
             "iterations": 0,
@@ -194,8 +211,11 @@ def ask_agent(query_text: str, tenant_id: str = None):
         product_result = final_state.get("last_product_search_result")
         if product_result:
             try:
-                return json.loads(product_result)
+                parsed_json = json.loads(product_result)
+                logger.info(f"--- GRAPH FINISHED: Returning raw JSON array from tool ({len(parsed_json)} items) ---")
+                return parsed_json
             except (json.JSONDecodeError, TypeError):
+                logger.warning("--- GRAPH FINISHED: Failed to parse tool JSON, falling back to conversational ---")
                 pass
 
         # Otherwise return the last AIMessage content (policy / FAQ / detail answer)
@@ -204,9 +224,13 @@ def ask_agent(query_text: str, tenant_id: str = None):
             None
         )
         output = last_ai.content if last_ai else "I'm sorry, I encountered an error. Please try again."
+        
         try:
-            return json.loads(output)
+            parsed = json.loads(output)
+            logger.info(f"--- GRAPH FINISHED: Returning JSON from agent ---")
+            return parsed
         except (json.JSONDecodeError, TypeError):
+            logger.info(f"--- GRAPH FINISHED: Returning text from agent ({len(output)} chars) ---")
             return output
 
     except Exception as e:
