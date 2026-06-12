@@ -425,6 +425,68 @@ def query_product_faqs(query: str):
     return text.encode("ascii", errors="ignore").decode("ascii")
 
 
+def query_general_knowledge(query: str):
+    """
+    Search blog articles and general lighting knowledge stored as Chunk nodes.
+    Uses full-text search on the chunk_text index.
+    """
+    try:
+        # Build a simple Lucene query: take first 5 meaningful words
+        # Split on spaces AND hyphens so "Wave-Free" → ["Wave", "Free"]
+        _STOP = {"the", "a", "an", "is", "are", "which", "one", "better", "vs",
+                 "or", "and", "for", "of", "in", "with", "what", "how", "do",
+                 "does", "can", "will", "between", "difference"}
+        raw_tokens = []
+        for word in query.split():
+            raw_tokens.extend(word.strip(".,?!'\"-–—").split("-"))
+        good = [t + "~" for t in raw_tokens if t and len(t) > 2 and t.lower() not in _STOP]
+        if not good:
+            return "No relevant articles found."
+        lucene_query = " AND ".join(good[:5])
+        logger.info(f"GeneralKnowledgeDatabase | lucene={lucene_query!r}")
+
+        cypher = """
+        CALL db.index.fulltext.queryNodes("chunk_text", $q) YIELD node AS c, score
+        WITH c, score
+        WHERE score > 0.5
+        RETURN c.text AS text, score
+        ORDER BY score DESC
+        LIMIT 3
+        """
+        res = AgentConfig.graph.query(cypher, params={"q": lucene_query})
+
+        if not res:
+            # Fallback: try with only the first distinctive token (no fuzzy)
+            key_token = good[0].rstrip("~")
+            logger.info(f"GeneralKnowledgeDatabase fallback: trying single token '{key_token}'")
+            res = AgentConfig.graph.query(cypher, params={"q": key_token})
+
+        if not res:
+            return "No relevant articles found."
+
+        # Concatenate results, strip markdown images/links to reduce noise
+        import re
+        combined = []
+        for row in res:
+            text = row.get("text") or ""
+            # Strip markdown image/link syntax
+            text = re.sub(r"!\[.*?\]\(.*?\)", "", text)
+            text = re.sub(r"\[.*?\]\(.*?\)", "", text)
+            text = re.sub(r"---.*?---", "", text, flags=re.DOTALL)
+            text = re.sub(r"\s+", " ", text).strip()
+            if len(text) > 50:
+                combined.append(text[:1500])  # limit per chunk
+
+        if not combined:
+            return "No relevant articles found."
+
+        output = "\n\n---\n".join(combined)
+        return output.encode("ascii", errors="ignore").decode("ascii")
+    except Exception as e:
+        logger.error(f"Error in GeneralKnowledgeDatabase: {e}", exc_info=True)
+        return f"Error searching knowledge base: {e}"
+
+
 def get_tools():
     return [
         StructuredTool.from_function(
@@ -506,6 +568,25 @@ def get_tools():
                 "'Which is better: warm white or cool white?', "
                 "'Which light requires the least maintenance?', "
                 "'Can this be used for commercial spaces?'"
+            )
+        ),
+        Tool(
+            name="GeneralKnowledgeDatabase",
+            func=query_general_knowledge,
+            description=(
+                "Use this for educational, comparison, and 'how-to' questions about lighting concepts "
+                "that are NOT about a specific product and NOT a company policy. "
+                "This searches Inventaa's blog articles and knowledge base. "
+                "Examples: "
+                "'Wave-Free LED Panel Lights vs Traditional LED Panel Lights', "
+                "'What is the difference between bollard and pathway lights?', "
+                "'How to choose outdoor lighting?', "
+                "'Benefits of solar lights', "
+                "'What is colour rendering index (CRI)?', "
+                "'How many lumens do I need for outdoor lighting?', "
+                "'LED vs fluorescent lights comparison', "
+                "'How to reduce electricity bill with LED lighting', "
+                "'What is IP rating in outdoor lights?'"
             )
         )
     ]

@@ -55,6 +55,16 @@ TOOL SELECTION GUIDE
   • Smart/timer: "Can this be connected to a smart switch or timer?"
   • Maintenance: "Which outdoor light requires least maintenance?"
 
+→ GeneralKnowledgeDatabase — Use for educational/comparison/concept questions about lighting:
+  • 'Wave-Free LED Panel Lights vs Traditional LED Panel Lights'
+  • 'What is the difference between bollard and pathway lights?'
+  • 'How to choose outdoor lighting for my home?'
+  • 'What is CRI (colour rendering index)?'
+  • 'How many lumens do I need for outdoor spaces?'
+  • 'Benefits of solar lights over wired lights'
+  • 'LED vs fluorescent: which is better?'
+  • 'What is IP rating?', 'How to read an LED spec sheet?'
+
 → PolicyVectorDatabase — Use ONLY for business/operational questions:
   • Returns, replacements, exchanges, damaged/wrong item
   • Delivery time, shipping charges, order tracking, express shipping
@@ -75,7 +85,10 @@ PARAMETER MAPPING EXAMPLES
 "energy efficient lights under ₹5000" → SearchProductsDatabase(feature='energy-efficient', max_price=5000, sort_by='rating_desc')
 "IP65 street lights"                  → SearchProductsDatabase(query='street', spec='IP65')
 "lights for heavy rain area"          → SearchProductsDatabase(feature='waterproof')
-"warranty of the Athena light"        → ProductDetailsDatabase(product_name='Athena')
+"Wave-Free vs Traditional LED panels"        → GeneralKnowledgeDatabase(query='wave-free LED panel traditional comparison')
+"benefits of solar outdoor lights"            → GeneralKnowledgeDatabase(query='benefits solar outdoor lights')
+"what is IP65 rating"                         → GeneralKnowledgeDatabase(query='IP65 rating waterproof outdoor')
+"warranty of the Athena light"               → ProductDetailsDatabase(product_name='Athena')
 "what material is the Tacita?"        → ProductDetailsDatabase(product_name='Tacita')
 "what is the return policy?"          → PolicyVectorDatabase(query='return policy')
 "how long does delivery take?"        → PolicyVectorDatabase(query='delivery time')
