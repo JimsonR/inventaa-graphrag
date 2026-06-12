@@ -153,8 +153,6 @@ FEATURE_KEYWORDS = {
     "fade": "UV-protected",
     "energy": "energy-efficient",
     "efficient": "energy-efficient",
-    "indoor": "indoor",
-    "outdoor": "outdoor",
 }
 
 # Stop words to ignore when tokenizing queries

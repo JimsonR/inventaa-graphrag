@@ -93,11 +93,11 @@ Decide if these products genuinely match what the user requested.
 Rules:
 - If the user asked for "indoor" products but ALL results are "outdoor", "exterior", or "gate" products -> REJECT.
 - If the results are completely unrelated product categories -> REJECT.
-- If the JSON is empty [] -> REJECT.
+- If the JSON is empty [] -> ACCEPT. This is a valid response meaning we do not carry the requested product.
 - If the results are reasonably relevant to the user's query -> ACCEPT.
 
 Output ONLY one of:
-- "VALID" if the results match
+- "VALID" if the results match (or if the JSON is empty [])
 - A short feedback sentence if they do not (e.g. "Results are exterior gate lights but user wants indoor lights. Tell user we don't carry indoor lights.")"""
         else:
             last_ai_content = last_ai_msg.content if last_ai_msg else ""
