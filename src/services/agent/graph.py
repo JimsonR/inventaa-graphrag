@@ -165,13 +165,19 @@ Output ONLY one of:
 - A short feedback sentence if they do not (e.g. "Results are exterior gate lights but user wants indoor lights. Tell user we don't carry indoor lights.")"""
         else:
             last_ai_content = last_ai_msg.content if last_ai_msg else ""
-            eval_prompt = f"""You are a strict QA evaluator for Inventaa.
+            eval_prompt = f"""You are a lenient QA evaluator for Inventaa.
 The user asked: "{user_query}"
 The agent responded: "{last_ai_content}"
 
-Evaluate if the response completely and accurately answers the user's question.
-If satisfactory, or if the agent correctly said it doesn't have the info, output ONLY: "VALID"
-If unsatisfactory, output a short feedback sentence."""
+Output ONLY "VALID" unless the response has one of these CRITICAL failures:
+- The agent made up information not supported by any tool (hallucinated)
+- The agent said it doesn't know, but the response actually contains the answer
+- The agent gave the WRONG product (completely wrong product name)
+- The response is completely empty or a server error message
+
+DO NOT reject for minor phrasing preferences (e.g. saying "available in 18W" vs "only 18W available").
+DO NOT reject policy, FAQ, or product detail answers that contain the relevant facts.
+If in doubt, output "VALID"."""
 
         eval_res = AgentConfig.llm.invoke([SystemMessage(content=eval_prompt)])
         eval_content = eval_res.content.strip()

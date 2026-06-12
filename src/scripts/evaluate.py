@@ -2,6 +2,13 @@ import sys
 import os
 import time
 
+from dotenv import load_dotenv
+load_dotenv()
+
+# Fix Windows console unicode printing for the ₹ symbol
+if sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+
 # Add src to the path to allow imports
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
@@ -84,6 +91,41 @@ GROUND_TRUTHS = [
         "type": str,
         "validate": lambda res: "day" in res.lower() or "ship" in res.lower() or "deliver" in res.lower(),
         "error_msg": "Expected a conversational response explaining shipping timelines."
+    },
+    {
+        "name": "Application/Advisory (Landscape)",
+        "query": "recommend lighting for a hotel landscape project",
+        "type": list,
+        "validate": lambda res: len(res) > 0 and isinstance(res, list),
+        "error_msg": "Expected a list of products suitable for landscape/hotel."
+    },
+    {
+        "name": "Durability (Heavy Rain)",
+        "query": "My area gets heavy rainfall. Which lights should I choose?",
+        "type": list,
+        "validate": lambda res: len(res) > 0 and isinstance(res, list),
+        "error_msg": "Expected a list of waterproof/weatherproof products."
+    },
+    {
+        "name": "Comparison/Advice (Warm vs Cool)",
+        "query": "Which is better: warm white or cool white?",
+        "type": str,
+        "validate": lambda res: "warm" in res.lower() and "cool" in res.lower(),
+        "error_msg": "Expected a conversational explanation comparing warm and cool white."
+    },
+    {
+        "name": "Product Detail (Specs)",
+        "query": "What are the dimensions of the Mini Olivia light?",
+        "type": str,
+        "validate": lambda res: "olivia" in res.lower() and ("dimension" in res.lower() or "size" in res.lower() or "mm" in res.lower() or "cm" in res.lower() or "inch" in res.lower()),
+        "error_msg": "Expected a conversational response with the dimensions."
+    },
+    {
+        "name": "Installation FAQ",
+        "query": "Is installation easy? Can I install it myself?",
+        "type": str,
+        "validate": lambda res: "install" in res.lower(),
+        "error_msg": "Expected conversational advice regarding installation."
     }
 ]
 

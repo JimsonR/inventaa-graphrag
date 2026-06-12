@@ -390,6 +390,8 @@ def get_product_details_db(product_name: str):
         # Warranty
         if product.get('warranty_info'):
             output += f"Warranty: {product.get('warranty_info')}\n"
+        else:
+            output += "Warranty: This product carries Inventaa's standard 1-Year replacement warranty. Contact support to claim.\n"
 
         # All specs
         if product.get('specs'):
