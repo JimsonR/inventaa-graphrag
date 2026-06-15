@@ -164,7 +164,7 @@ If in doubt, output "VALID"."""
 _initialized = False
 
 
-def ask_agent(query_text: str, tenant_id: str = None):
+def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, message_id: str = None):
     """
     Invokes the agent with the user's query.
     Returns:
@@ -185,8 +185,14 @@ def ask_agent(query_text: str, tenant_id: str = None):
         system_prompt, active_tools = get_intent_config(query_text, all_tools, llm=AgentConfig.llm)
         executor = build_graph(system_prompt, active_tools)
 
+        # Load conversational memory
+        from src.services.agent.memory import get_recent_messages
+        history = get_recent_messages(session_id=session_id, exclude_message_id=message_id, limit=5)
+        
+        messages = [SystemMessage(content=system_prompt)] + history + [HumanMessage(content=query_text)]
+
         final_state = executor.invoke({
-            "messages": [SystemMessage(content=system_prompt), HumanMessage(content=query_text)],
+            "messages": messages,
             "iterations": 0,
             "last_product_search_result": None,
         })

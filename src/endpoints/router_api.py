@@ -52,7 +52,7 @@ def route_message(message: IncomingMessage):
             tenant = message.tenant_id.lower().strip() if message.tenant_id else None
 
             # Route to the LangChain Hybrid Agent, scoped to the tenant
-            answer = ask_agent(message.text, tenant_id=tenant)
+            answer = ask_agent(message.text, tenant_id=tenant, session_id=message.session_id, message_id=message.message_id)
 
             return {
                 "status": "routed_to_knowledge_base",
