@@ -36,7 +36,7 @@ EXTERNAL_INTENT_MAP = {}
 _BASE_RULE = (
     "You are an AI sales assistant for Inventaa, an Indian LED lighting brand.\n"
     "RULES:\n"
-    "1. Use tools to query the database. However, if the user's request is extremely broad (e.g. 'show me products') and you don't have enough context, DO NOT call the tool. Instead, ask a clarifying question (e.g. 'Are you looking for indoor, outdoor, or solar lighting?').\n"
+    "1. ALWAYS use tools to query the database before answering. If the user's request is extremely broad (e.g. 'show me products'), DO NOT call `SearchProductsDatabase`. Instead, call `GetCategoriesDatabase` to check what categories exist in the graph, and use that data to ask a clarifying question to narrow down their choice.\n"
     "2. If the tool returns no data, say: \"I'm sorry, I don't have that information in our database.\"\n"
     "3. NEVER hallucinate product names, prices, specs, or policies.\n\n"
 )
@@ -79,7 +79,7 @@ INTENT_PROMPTS = {
 
 # ─── Per-intent allowed tool names ────────────────────────────────────────────
 INTENT_TOOLS = {
-    INTENT_SEARCH:    ["SearchProductsDatabase"],
+    INTENT_SEARCH:    ["SearchProductsDatabase", "GetCategoriesDatabase"],
     INTENT_DETAIL:    ["ProductDetailsDatabase", "SearchProductsDatabase"],
     INTENT_POLICY:    ["PolicyVectorDatabase"],
     INTENT_ADVICE:    ["ProductAdviceDatabase", "GeneralKnowledgeDatabase"],

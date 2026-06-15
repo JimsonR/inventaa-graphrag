@@ -401,6 +401,33 @@ def get_product_details_db(product_name: str):
 
 
 
+def get_categories_db(*args, **kwargs):
+    """
+    Returns all available product categories currently in the database.
+    """
+    try:
+        from src.services.agent.context import tenant_context
+        tenant_id = tenant_context.get()
+        
+        cypher = "MATCH (c:Category)-[:HAS_PRODUCT]->(p:Product)\n"
+        params = {}
+        if tenant_id:
+            cypher += "WHERE p.tenant = $tenant_id\n"
+            params["tenant_id"] = tenant_id
+            
+        cypher += "RETURN DISTINCT c.name AS category ORDER BY category"
+        res = AgentConfig.graph.query(cypher, params=params)
+        
+        if not res:
+            return "No categories found in the database."
+            
+        cats = [r["category"] for r in res]
+        return "Available Categories in DB: " + ", ".join(cats)
+    except Exception as e:
+        logger.error(f"Error in GetCategoriesDatabase: {e}", exc_info=True)
+        return f"Error getting categories: {e}"
+
+
 def query_policies(query: str):
     from src.services.agent.context import tenant_context
     tenant_id = tenant_context.get()
@@ -534,6 +561,15 @@ def get_tools():
                 "\n- 'energy efficient gate lights' → query='gate', feature='energy-efficient'"
             ),
             return_direct=False
+        ),
+        Tool(
+            name="GetCategoriesDatabase",
+            func=get_categories_db,
+            description=(
+                "Use this to fetch the list of available product categories from the database. "
+                "Call this when the user's request is extremely broad (e.g. 'show me products') "
+                "to find out what options exist before asking them a clarifying question."
+            )
         ),
         StructuredTool.from_function(
             name="ProductDetailsDatabase",
