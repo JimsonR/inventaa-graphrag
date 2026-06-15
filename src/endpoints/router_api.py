@@ -50,6 +50,10 @@ def route_message(message: IncomingMessage):
         if message.intent == "FAQ_KNOWLEDGE":
             # Normalize tenant_id to lowercase ("Inventaa" → "inventaa")
             tenant = message.tenant_id.lower().strip() if message.tenant_id else None
+            
+            # Temporary mapping: the WhatsApp bot only accepts tenant_swadhya_foods_001 for now
+            if tenant == "tenant_swadhya_foods_001":
+                tenant = "inventaa"
 
             # Route to the LangChain Hybrid Agent, scoped to the tenant
             answer = ask_agent(message.text, tenant_id=tenant, session_id=message.session_id, message_id=message.message_id)

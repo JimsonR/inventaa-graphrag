@@ -73,7 +73,7 @@ def build_graph(system_prompt: str, tools: list):
             return {}
 
         user_query = ""
-        for msg in messages:
+        for msg in reversed(messages):
             if isinstance(msg, HumanMessage) and not msg.content.startswith("Feedback:"):
                 user_query = msg.content
                 break
@@ -178,6 +178,9 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
         logger.info("Hybrid RAG Agent Initialized!")
 
     try:
+        from src.services.agent.context import tenant_context
+        tenant_context.set(tenant_id)
+        
         logger.info(f"--- STARTING GRAPH EXECUTION FOR QUERY: '{query_text}' ---")
 
         # Classify query intent → get focused prompt + only the relevant tools

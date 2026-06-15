@@ -232,7 +232,13 @@ MATCH (cat:Category {name: $category})-[:HAS_PRODUCT]->(p:Product)
         else:
             cypher_query = "MATCH (p:Product)\n"
 
-        where_clauses = []
+        from src.services.agent.context import tenant_context
+        tenant_id = tenant_context.get()
+        if tenant_id:
+            where_clauses = ["p.tenant = $tenant_id"]
+            params["tenant_id"] = tenant_id
+        else:
+            where_clauses = []
 
         # UseCase filter
         if final_usecase:
@@ -334,6 +340,7 @@ def get_product_details_db(product_name: str):
 
         cypher_query = """
         CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score
+        WHERE p.tenant = $tenant_id OR p.tenant IS NULL
         WITH p, score
         ORDER BY score DESC LIMIT 1
         OPTIONAL MATCH (p)-[:HAS_WARRANTY]->(w:Warranty)
@@ -347,7 +354,8 @@ def get_product_details_db(product_name: str):
                collect(DISTINCT wo.name) AS wattages,
                collect(DISTINCT co.name) AS colors
         """
-        params = {"lucene_query": lucene_query}
+        from src.services.agent.context import tenant_context
+        params = {"lucene_query": lucene_query, "tenant_id": tenant_context.get()}
         logger.info(f"ProductDetailsDatabase Cypher: {cypher_query.strip()} | Params: {params}")
         res = AgentConfig.graph.query(cypher_query, params=params)
 
@@ -394,9 +402,13 @@ def get_product_details_db(product_name: str):
 
 
 def query_policies(query: str):
-    results = AgentConfig.policy_vector_store.similarity_search_with_score(query, k=2)
+    from src.services.agent.context import tenant_context
+    tenant_id = tenant_context.get()
+    filter_dict = {"tenant": tenant_id} if tenant_id else None
+    
+    results = AgentConfig.policy_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
     if not results:
-        results = AgentConfig.general_vector_store.similarity_search_with_score(query, k=2)
+        results = AgentConfig.general_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
     if not results:
         return "No relevant policy found."
     text = "\n\n".join([doc.page_content for doc, _ in results])
@@ -404,7 +416,11 @@ def query_policies(query: str):
 
 
 def query_product_faqs(query: str):
-    results = AgentConfig.product_faq_vector_store.similarity_search_with_score(query, k=2)
+    from src.services.agent.context import tenant_context
+    tenant_id = tenant_context.get()
+    filter_dict = {"tenant": tenant_id} if tenant_id else None
+    
+    results = AgentConfig.product_faq_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
     if not results:
         return "No relevant product FAQ found."
     text = "\n\n".join([doc.page_content for doc, _ in results])
@@ -438,19 +454,21 @@ def query_general_knowledge(query: str):
 
         cypher = """
         CALL db.index.fulltext.queryNodes("chunk_text", $q) YIELD node AS c, score
+        WHERE (c.tenant = $tenant_id OR c.tenant IS NULL) AND score > 0.5
         WITH c, score
-        WHERE score > 0.5
         RETURN c.text AS text, score
         ORDER BY score DESC
         LIMIT 3
         """
-        res = AgentConfig.graph.query(cypher, params={"q": lucene_query})
+        from src.services.agent.context import tenant_context
+        tenant_id = tenant_context.get()
+        res = AgentConfig.graph.query(cypher, params={"q": lucene_query, "tenant_id": tenant_id})
 
         if not res:
             # Fallback: try with only the first distinctive token (no fuzzy)
             key_token = good[0].rstrip("~")
             logger.info(f"GeneralKnowledgeDatabase fallback: trying single token '{key_token}'")
-            res = AgentConfig.graph.query(cypher, params={"q": key_token})
+            res = AgentConfig.graph.query(cypher, params={"q": key_token, "tenant_id": tenant_id})
 
         if not res:
             return "No relevant articles found."
