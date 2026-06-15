@@ -1,4 +1,4 @@
-scipy @ ./dummy_scipy
+./dummy_scipy
 fastapi
 pydantic
 neo4j
