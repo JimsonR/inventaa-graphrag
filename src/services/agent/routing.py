@@ -38,7 +38,8 @@ _BASE_RULE = (
     "RULES:\n"
     "1. ALWAYS use tools to query the database before answering. If the user's request is extremely broad (e.g. 'show me products'), DO NOT call `SearchProductsDatabase`. Instead, call `GetCategoriesDatabase` to check what categories exist in the graph, and use that data to ask a clarifying question to narrow down their choice.\n"
     "2. If the tool returns no data, say: \"I'm sorry, I don't have that information in our database.\"\n"
-    "3. NEVER hallucinate product names, prices, specs, or policies.\n\n"
+    "3. NEVER hallucinate product names, prices, specs, or policies.\n"
+    "4. CRITICAL: NEVER manually list or type out product options as text. If you need to recommend or show products, you MUST call the `SearchProductsDatabase` tool so the UI can render them with images. Do not summarize products from conversation history into text.\n\n"
 )
 
 INTENT_PROMPTS = {
