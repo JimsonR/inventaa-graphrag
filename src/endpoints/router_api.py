@@ -55,8 +55,13 @@ def route_message(message: IncomingMessage):
             if tenant == "tenant_swadhya_foods_001":
                 tenant = "inventaa"
 
+            # Combine text and reply_text if the user clicked an option button
+            query_text = message.text or ""
+            if message.reply_text:
+                query_text = f"{query_text}\n(Selected option: {message.reply_text})" if query_text else f"(Selected option: {message.reply_text})"
+
             # Route to the LangChain Hybrid Agent, scoped to the tenant
-            answer = ask_agent(message.text, tenant_id=tenant, session_id=message.session_id, message_id=message.message_id, user_id=message.session_id)
+            answer = ask_agent(query_text, tenant_id=tenant, session_id=message.session_id, message_id=message.message_id, user_id=message.session_id)
 
             return {
                 "status": "routed_to_knowledge_base",

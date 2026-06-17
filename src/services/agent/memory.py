@@ -28,7 +28,7 @@ def get_recent_messages(session_id: str, exclude_message_id: Optional[str] = Non
 
     try:
         supabase = _get_supabase()
-        query = supabase.table("messages").select("message_id,text,direction,created_at").eq("session_id", session_id)
+        query = supabase.table("messages").select("message_id,text,direction,created_at,reply_text").eq("session_id", session_id)
         
         # Order by created_at descending to get the most recent
         query = query.order("created_at", desc=True).limit(limit)
@@ -42,7 +42,12 @@ def get_recent_messages(session_id: str, exclude_message_id: Optional[str] = Non
             if exclude_message_id and row.get("message_id") == exclude_message_id:
                 continue
                 
-            text = row.get("text", "")
+            text = row.get("text") or ""
+            reply_text = row.get("reply_text")
+            
+            if reply_text:
+                text = f"{text}\n(Selected option: {reply_text})" if text else f"(Selected option: {reply_text})"
+            
             direction = row.get("direction")
             
             if direction == "inbound":
