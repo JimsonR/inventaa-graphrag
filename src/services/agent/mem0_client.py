@@ -1,5 +1,6 @@
 import os
 os.environ["MEM0_TELEMETRY"] = "false"
+os.environ["MEM0_DIR"] = "/tmp/.mem0"
 
 import logging
 from typing import Optional
