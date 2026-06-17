@@ -7,323 +7,98 @@ from src.services.agent.config import AgentConfig
 
 logger = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────────────────────────────────────
-# GRAPH SCHEMA (for reference / prompt engineering)
-# Categories: Gate & Pillar Lights | Solar Lights | Outdoor Wall Lights |
-#             Bollard & Garden Lights | Street Lights | Flood Lights |
-#             Indoor & Ceiling Lights | Panel Lights | Pathway & Step Lights |
-#             Bulkhead Lights | Divine & Temple Lights | General Purpose Lights
-#
-# UseCases: gate-pillar | indoor-ceiling | outdoor-wall | garden-pathway |
-#           pathway-step | street-road | flood-area | solar-outdoor |
-#           religious-decorative
-#
-# Features: outdoor | indoor | solar-powered | waterproof | IP65-rated |
-#           IP66-rated | motion-sensor | dimmable | energy-efficient |
-#           warm-white | cool-white | neutral-white | 3-in-1-colour |
-#           aluminium-body | polycarbonate-body | surface-mount | wall-mount |
-#           post-top-mount | UV-protected | rustproof
-# ─────────────────────────────────────────────────────────────────────────────
 
-CATEGORY_KEYWORDS = {
-    # Gate & Pillar
-    "gate": "Gate & Pillar Lights",
-    "pillar": "Gate & Pillar Lights",
-    "post": "Gate & Pillar Lights",
-    "compound": "Gate & Pillar Lights",
-    "entrance": "Gate & Pillar Lights",
-    "boundary": "Gate & Pillar Lights",
-    # Solar
-    "solar": "Solar Lights",
-    # Outdoor Wall
-    "wall": "Outdoor Wall Lights",
-    "sconce": "Outdoor Wall Lights",
-    "elevation": "Outdoor Wall Lights",
-    # Bollard & Garden
-    "bollard": "Bollard & Garden Lights",
-    "garden": "Bollard & Garden Lights",
-    "lawn": "Bollard & Garden Lights",
-    "landscape": "Bollard & Garden Lights",
-    "driveway": "Bollard & Garden Lights",
-    "yard": "Bollard & Garden Lights",
-    "terrace": "Bollard & Garden Lights",
-    "balcony": "Bollard & Garden Lights",
-    "resort": "Bollard & Garden Lights",
-    "hotel": "Bollard & Garden Lights",
-    "villa": "Bollard & Garden Lights",
-    "community": "Bollard & Garden Lights",
-    # Street
-    "street": "Street Lights",
-    "road": "Street Lights",
-    "parking": "Street Lights",
-    # Flood
-    "flood": "Flood Lights",
-    "stadium": "Flood Lights",
-    # Indoor & Ceiling
-    "indoor": "Indoor & Ceiling Lights",
-    "ceiling": "Indoor & Ceiling Lights",
-    "downlight": "Indoor & Ceiling Lights",
-    # Panel
-    "panel": "Panel Lights",
-    # Pathway & Step
-    "pathway": "Pathway & Step Lights",
-    "step": "Pathway & Step Lights",
-    "stairway": "Pathway & Step Lights",
-    "walkway": "Pathway & Step Lights",
-    "stair": "Pathway & Step Lights",
-    # Bulkhead
-    "bulkhead": "Bulkhead Lights",
-    # Divine & Temple
-    "divine": "Divine & Temple Lights",
-    "temple": "Divine & Temple Lights",
-    "religious": "Divine & Temple Lights",
-    "god": "Divine & Temple Lights",
-    "pooja": "Divine & Temple Lights",
-    # General
-    "general": "General Purpose Lights",
-}
-
-USECASE_KEYWORDS = {
-    "gate": "gate-pillar",
-    "pillar": "gate-pillar",
-    "entrance": "gate-pillar",
-    "compound": "gate-pillar",
-    "post": "gate-pillar",
-    "indoor": "indoor-ceiling",
-    "ceiling": "indoor-ceiling",
-    "downlight": "indoor-ceiling",
-    "wall": "outdoor-wall",
-    "sconce": "outdoor-wall",
-    "elevation": "outdoor-wall",
-    "garden": "garden-pathway",
-    "lawn": "garden-pathway",
-    "landscape": "garden-pathway",
-    "driveway": "garden-pathway",
-    "villa": "garden-pathway",
-    "terrace": "garden-pathway",
-    "balcony": "garden-pathway",
-    "resort": "garden-pathway",
-    "hotel": "garden-pathway",
-    "bollard": "garden-pathway",
-    "pathway": "pathway-step",
-    "walkway": "pathway-step",
-    "step": "pathway-step",
-    "stairway": "pathway-step",
-    "stair": "pathway-step",
-    "street": "street-road",
-    "road": "street-road",
-    "parking": "street-road",
-    "flood": "flood-area",
-    "stadium": "flood-area",
-    "solar": "solar-outdoor",
-    "temple": "religious-decorative",
-    "divine": "religious-decorative",
-    "religious": "religious-decorative",
-    "pooja": "religious-decorative",
-}
-
-FEATURE_KEYWORDS = {
-    "solar": "solar-powered",
-    "waterproof": "waterproof",
-    "weatherproof": "waterproof",
-    "rain": "waterproof",
-    "water": "waterproof",
-    "ip65": "IP65-rated",
-    "ip66": "IP66-rated",
-    "coastal": "rustproof",
-    "motion": "motion-sensor",
-    "sensor": "motion-sensor",
-    "dimmable": "dimmable",
-    "dim": "dimmable",
-    "warm": "warm-white",
-    "cool": "cool-white",
-    "neutral": "neutral-white",
-    "3-in-1": "3-in-1-colour",
-    "colour": "3-in-1-colour",
-    "color": "3-in-1-colour",
-    "aluminium": "aluminium-body",
-    "aluminum": "aluminium-body",
-    "metal": "aluminium-body",
-    "polycarbonate": "polycarbonate-body",
-    "plastic": "polycarbonate-body",
-    "surface": "surface-mount",
-    "rustproof": "rustproof",
-    "rust": "rustproof",
-    "uv": "UV-protected",
-    "fade": "UV-protected",
-    "energy": "energy-efficient",
-    "efficient": "energy-efficient",
-}
-
-# Stop words to ignore when tokenizing queries
-_STOP_WORDS = {
-    "light", "lights", "lamp", "lamps", "led", "product", "products",
-    "show", "me", "get", "find", "list", "give", "want", "need",
-    "rated", "rating", "lowest", "highest", "best", "top", "some",
-    "a", "an", "the", "for", "with", "of", "in", "and", "or",
-    "is", "are", "what", "which", "how", "do", "can", "does",
-    "suggest", "recommend", "suitable", "use", "buy", "choose",
-    "my", "i", "we", "our", "this", "that", "under", "budget",
-    "within", "rs", "inr", "rupees", "good", "looking", "modern",
-}
-
-
-def _classify_query(query: str):
-    """Return (matched_category, matched_usecase, matched_features, remaining_tokens)."""
-    tokens = [t.lower().strip(".,?!") for t in query.split() if t.lower().strip(".,?!") not in _STOP_WORDS]
-    matched_category = None
-    matched_usecase = None
-    matched_features = []
-    remaining = []
-
-    for token in tokens:
-        cat = CATEGORY_KEYWORDS.get(token)
-        uc = USECASE_KEYWORDS.get(token)
-        feat = FEATURE_KEYWORDS.get(token)
-        if cat and not matched_category:
-            matched_category = cat
-        if uc and not matched_usecase:
-            matched_usecase = uc
-        if feat and feat not in matched_features:
-            matched_features.append(feat)
-        if not cat and not uc and not feat:
-            remaining.append(token)
-
-    return matched_category, matched_usecase, matched_features, remaining
-
-
-def search_products_db(
-    query: Optional[str] = None,
-    category: Optional[str] = None,
-    use_case: Optional[str] = None,
-    feature: Optional[str] = None,
-    spec: Optional[str] = None,
+def filter_graph_entities(
+    filters: Optional[list] = None,
     min_price: Optional[int] = None,
     max_price: Optional[int] = None,
     sort_by: Optional[str] = None,
-    limit: int = 5
+    limit: int = 100
 ):
     """
-    Search and filter products from the Neo4j graph database.
-    Uses Category, UseCase, and Feature graph nodes for precise filtering.
-    sort_by values: price_asc, price_desc, rating_desc, rating_asc, reviews_desc
+    Filter the central entity (e.g. Product) using connected metadata labels.
+    filters should be a list of dicts: [{"label": "Category", "value": "Solar Lights"}, ...]
     """
     try:
         params = {"limit": limit}
-
-        # Auto-classify the query into category/usecase/feature
-        auto_category, auto_usecase, auto_features, remaining_tokens = _classify_query(query or "")
-
-        # Prefer explicit parameters over auto-detected ones
-        final_category = category or auto_category
-        final_usecase = use_case or auto_usecase
-        final_features = ([feature] if feature else []) + [f for f in auto_features if f != feature]
-
-        logger.info(f"SearchProducts | query={query!r} | auto_category={auto_category!r} "
-                    f"| auto_usecase={auto_usecase!r} | auto_features={auto_features} "
-                    f"| remaining_tokens={remaining_tokens}")
-
-        # Build Cypher: start from Category for maximum precision when category is known
-        if final_category:
-            cypher_query = """
-MATCH (cat:Category {name: $category})-[:HAS_PRODUCT]->(p:Product)
-"""
-            params["category"] = final_category
-        else:
-            cypher_query = "MATCH (p:Product)\n"
-
+        where_clauses = []
+        
         from src.services.agent.context import tenant_context
         tenant_id = tenant_context.get()
         if tenant_id:
-            where_clauses = ["p.tenant = $tenant_id"]
+            where_clauses.append("target.tenant = $tenant_id")
             params["tenant_id"] = tenant_id
-        else:
-            where_clauses = []
 
-        # UseCase filter
-        if final_usecase:
-            cypher_query += "MATCH (p)-[:SUITABLE_FOR]->(uc:UseCase {name: $use_case})\n"
-            params["use_case"] = final_usecase
+        from src.services.agent.routing import load_tenant_configs
+        configs = load_tenant_configs()
+        tenant_conf = configs.get(tenant_id, configs.get("default", {}))
+        
+        primary_entity = tenant_conf.get("primary_entity", "Product")
+        cypher_query = f"MATCH (target:{primary_entity})\n"
+        
+        if filters:
+            for i, f in enumerate(filters):
+                label = f.get("label")
+                val = f.get("value")
+                if label and val:
+                    # Generic undirected match dynamically finds the metadata node
+                    cypher_query += f"MATCH (target)--(f{i}:{label} {{name: $val_{i}}})\n"
+                    params[f"val_{i}"] = val
 
-        # Feature filter
-        if final_features:
-            for i, feat in enumerate(final_features[:2]):  # max 2 feature filters
-                feat_param = f"feature_{i}"
-                cypher_query += f"MATCH (p)-[:HAS_FEATURE]->(f{i}:Feature {{name: ${feat_param}}})\n"
-                params[feat_param] = feat
-
-        # Spec filter
-        if spec:
-            cypher_query += "MATCH (p)-[:HAS_SPEC]->(s:Spec)\n"
-            where_clauses.append("(toLower(s.key) CONTAINS toLower($spec) OR toLower(s.value) CONTAINS toLower($spec))")
-            params["spec"] = spec
-
-        # Price filters
+        # Price filters using config-driven property name
+        price_prop = tenant_conf.get("price_property", "price_num")
         if min_price is not None:
-            where_clauses.append("p.price_num >= $min_price")
+            where_clauses.append(f"target.{price_prop} >= $min_price")
             params["min_price"] = min_price
         if max_price is not None:
-            where_clauses.append("p.price_num <= $max_price")
+            where_clauses.append(f"target.{price_prop} <= $max_price")
             params["max_price"] = max_price
-
-        # Apply remaining tokens (like "7w") as text filters on the main query
-        if remaining_tokens:
-            for i, token in enumerate(remaining_tokens[:3]): # max 3 token filters
-                tok_param = f"rem_{i}"
-                params[tok_param] = token
-                where_clauses.append(
-                    f"(toLower(p.name) CONTAINS toLower(${tok_param}) "
-                    f"OR toLower(p.feature_descriptions) CONTAINS toLower(${tok_param}) "
-                    f"OR EXISTS {{ MATCH (p)-[:HAS_SPEC]->(s:Spec) WHERE toLower(s.value) CONTAINS toLower(${tok_param}) }})"
-                )
 
         if where_clauses:
             cypher_query += "WHERE " + " AND ".join(where_clauses) + "\n"
 
+
         # Sort
-        sort_map = {
-            "price_asc": "ORDER BY p.price_num ASC",
-            "price_low": "ORDER BY p.price_num ASC",
-            "price_desc": "ORDER BY p.price_num DESC",
-            "price_high": "ORDER BY p.price_num DESC",
-            "rating_desc": "ORDER BY p.rating_score DESC",
-            "rating_asc": "ORDER BY p.rating_score ASC",
-            "reviews_desc": "ORDER BY p.review_count DESC",
-        }
-        sort_clause = sort_map.get((sort_by or "").lower(), "ORDER BY p.rating_score DESC")
+        sort_map = tenant_conf.get("sort_map", {})
+        default_sort = tenant_conf.get("default_sort", "")
+        sort_clause = sort_map.get((sort_by or "").lower(), default_sort)
 
         cypher_query += f"""
-RETURN DISTINCT p.sku AS sku, p.name AS name, p.price_num AS price_num,
-       p.regular_price AS regular_price, p.discount_percentage AS discount_percentage,
-       p.image_url AS image_url, p.url AS url, p.rating_score AS rating,
-       p.review_count AS review_count, p.tenant AS tenant, p.feature_descriptions AS feature_descriptions
+WITH DISTINCT target
 {sort_clause}
+RETURN properties(target) AS details
 LIMIT $limit
 """
-
-        logger.info(f"SearchProductsDatabase Cypher:\n{cypher_query.strip()}\nParams: {params}")
+        logger.info(f"FilterGraphEntities Cypher:\n{cypher_query.strip()}\nParams: {params}")
         res = AgentConfig.graph.query(cypher_query, params=params)
-
+        
         if not res:
             return "[]"
-
-        return json.dumps(res, indent=2, ensure_ascii=False)
-
+            
+        # Flatten the 'details' dict so the final JSON is a flat list of properties 
+        # just like the old hardcoded query format, which frontends/clients expect.
+        flat_res = [row.get("details", {}) for row in res]
+            
+        return json.dumps(flat_res, indent=2, ensure_ascii=False)
     except Exception as e:
-        logger.error(f"Error in SearchProductsDatabase: {e}", exc_info=True)
+        logger.error(f"Error in filter_graph_entities: {e}", exc_info=True)
         return f"Error querying graph: {e}"
 
 
-def get_product_details_db(product_name: str):
+def get_entity_details_db(entity_name: str):
     try:
-        # --- Smarter tokenization ---
-        # Strip noise tokens (stop words, single chars, numbers-only, punctuation like "-")
-        _DETAIL_STOP = {
-            "led", "light", "lights", "lamp", "lamps", "the", "a", "an",
-            "and", "or", "for", "of", "in", "with", "by", "from",
-            "frontgate", "lighting", "design", "outdoor", "indoor",
-        }
-        raw_tokens = [t.strip(".,?!-–—/|") for t in product_name.split()]
+        from src.services.agent.context import tenant_context
+        from src.services.agent.routing import load_tenant_configs
+        tenant_id = tenant_context.get()
+        
+        configs = load_tenant_configs()
+        tenant_conf = configs.get(tenant_id, configs.get("default", {}))
+        
+        # Get stop words and index from config, or fallback to defaults
+        stop_words = set(tenant_conf.get("stop_words", []))
+        _DETAIL_STOP = stop_words.union({"the", "a", "an", "and", "or", "for", "of", "in", "with", "by", "from"})
+        
+        raw_tokens = [t.strip(".,?!-–—/|") for t in entity_name.split()]
         # Keep tokens that are meaningful: length > 1, not stop, not pure numbers
         good_tokens = [
             t for t in raw_tokens
@@ -331,111 +106,73 @@ def get_product_details_db(product_name: str):
         ]
 
         if not good_tokens:
-            return "Please provide a valid product name."
+            return "Please provide a valid entity name."
 
         # Build Lucene query: use first 3 good tokens with fuzzy (~), join remaining as plain phrases
         lucene_tokens = [t + "~" for t in good_tokens[:3]]
         lucene_query = " AND ".join(lucene_tokens)
-        logger.info(f"ProductDetailsDatabase | product_name={product_name!r} | lucene={lucene_query!r}")
+        logger.info(f"EntityDetailsDatabase | entity_name={entity_name!r} | lucene={lucene_query!r}")
 
-        cypher_query = """
-        CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score
+        ft_index = tenant_conf.get("indexes", {}).get("entity_fulltext", "entity_name_ft")
+        
+        primary_entity = tenant_conf.get("primary_entity", "Product")
+        
+        cypher_query = f"""
+        CALL db.index.fulltext.queryNodes("{ft_index}", $lucene_query) YIELD node AS p, score
         WHERE p.tenant = $tenant_id OR p.tenant IS NULL
         WITH p, score
         ORDER BY score DESC LIMIT 1
-        OPTIONAL MATCH (p)-[:HAS_WARRANTY]->(w:Warranty)
-        OPTIONAL MATCH (p)-[:HAS_SPEC]->(s:Spec)
-        OPTIONAL MATCH (p)-[:AVAILABLE_IN_WATTAGE]->(wo:WattageOption)
-        OPTIONAL MATCH (p)-[:AVAILABLE_IN_COLOR]->(co:ColorOption)
-        RETURN p.name AS name, p.price_num AS price,
-               p.feature_descriptions AS feature_descriptions,
-               w.description AS warranty_info, w.duration_years AS warranty_duration,
-               collect(DISTINCT s.key + ': ' + s.value) AS specs,
-               collect(DISTINCT wo.name) AS wattages,
-               collect(DISTINCT co.name) AS colors
+        OPTIONAL MATCH (p)--(m)
+        WHERE labels(m)[0] <> '{primary_entity}'
+        RETURN properties(p) AS details,
+               collect(DISTINCT labels(m)[0] + ': ' + coalesce(m.name, m.value, m.description, '')) AS metadata
         """
         from src.services.agent.context import tenant_context
         params = {"lucene_query": lucene_query, "tenant_id": tenant_context.get()}
-        logger.info(f"ProductDetailsDatabase Cypher: {cypher_query.strip()} | Params: {params}")
+        logger.info(f"EntityDetailsDatabase Cypher: {cypher_query.strip()} | Params: {params}")
         res = AgentConfig.graph.query(cypher_query, params=params)
 
         if not res:
-            return "Product not found."
+            return "Entity not found."
 
-        product = res[0]
-        output = f"Product Name: {product.get('name')}\n"
-        output += f"Price: Rs. {product.get('price')}\n"
+        row = res[0]
+        details = row.get('details', {})
+        metadata_list = row.get('metadata', [])
 
-        # Wattage options
-        wattages = [w for w in (product.get('wattages') or []) if w]
-        if wattages:
-            output += f"Available Wattages: {', '.join(sorted(wattages))}\n"
-        else:
-            # Fallback: look in specs for wattage
-            watt_specs = [s for s in (product.get('specs') or []) if 'watt' in s.lower() or 'power' in s.lower()]
-            if watt_specs:
-                output += f"Wattage Info: {'; '.join(watt_specs)}\n"
+        output = "Entity Details:\n"
+        output += json.dumps(details, indent=2, ensure_ascii=False) + "\n"
 
-        # Color options
-        colors = [c for c in (product.get('colors') or []) if c]
-        if colors:
-            output += f"Available Colors: {', '.join(sorted(colors))}\n"
-
-        # Warranty
-        if product.get('warranty_info'):
-            output += f"Warranty: {product.get('warranty_info')}\n"
-        else:
-            output += "Warranty: This product carries Inventaa's standard 1-Year replacement warranty. Contact support to claim.\n"
-
-        # All specs
-        if product.get('specs'):
-            output += f"Specifications: {', '.join(product.get('specs'))}\n"
-
-        if product.get('feature_descriptions'):
-            output += f"Features: {product.get('feature_descriptions')}\n"
+        if metadata_list:
+            output += "\nConnected Information:\n"
+            for item in sorted(set(metadata_list)):
+                if not item.endswith(': '):  # filter out empty names
+                    output += f"- {item}\n"
 
         return output.encode("ascii", errors="ignore").decode("ascii")
     except Exception as e:
-        logger.error(f"Error in ProductDetailsDatabase: {e}", exc_info=True)
-        return f"Error getting product details: {e}"
+        logger.error(f"Error in EntityDetailsDatabase: {e}", exc_info=True)
+        return f"Error getting entity details: {e}"
 
 
 
-def get_categories_db(*args, **kwargs):
-    """
-    Returns all available product categories currently in the database.
-    """
-    try:
-        from src.services.agent.context import tenant_context
-        tenant_id = tenant_context.get()
-        
-        cypher = "MATCH (c:Category)-[:HAS_PRODUCT]->(p:Product)\n"
-        params = {}
-        if tenant_id:
-            cypher += "WHERE p.tenant = $tenant_id\n"
-            params["tenant_id"] = tenant_id
-            
-        cypher += "RETURN DISTINCT c.name AS category ORDER BY category"
-        res = AgentConfig.graph.query(cypher, params=params)
-        
-        if not res:
-            return "No categories found in the database."
-            
-        cats = [r["category"] for r in res]
-        return "Available Categories in DB: " + ", ".join(cats)
-    except Exception as e:
-        logger.error(f"Error in GetCategoriesDatabase: {e}", exc_info=True)
-        return f"Error getting categories: {e}"
+
 
 
 def query_policies(query: str):
     from src.services.agent.context import tenant_context
+    from src.services.agent.routing import load_tenant_configs
     tenant_id = tenant_context.get()
     filter_dict = {"tenant": tenant_id} if tenant_id else None
     
-    results = AgentConfig.policy_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
+    configs = load_tenant_configs()
+    tenant_conf = configs.get(tenant_id, configs.get("default", {}))
+    
+    policy_idx = tenant_conf.get("indexes", {}).get("policy", "policy_vector")
+    general_faq_idx = tenant_conf.get("indexes", {}).get("general_faq", "general_faq_vector")
+    
+    results = AgentConfig.get_vector_store(policy_idx).similarity_search_with_score(query, k=2, filter=filter_dict)
     if not results:
-        results = AgentConfig.general_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
+        results = AgentConfig.get_vector_store(general_faq_idx).similarity_search_with_score(query, k=2, filter=filter_dict)
     if not results:
         return "No relevant policy found."
     text = "\n\n".join([doc.page_content for doc, _ in results])
@@ -444,10 +181,18 @@ def query_policies(query: str):
 
 def query_product_faqs(query: str):
     from src.services.agent.context import tenant_context
+    from src.services.agent.routing import load_tenant_configs
     tenant_id = tenant_context.get()
     filter_dict = {"tenant": tenant_id} if tenant_id else None
     
-    results = AgentConfig.product_faq_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
+    configs = load_tenant_configs()
+    tenant_conf = configs.get(tenant_id, configs.get("default", {}))
+    
+    product_faq_idx = tenant_conf.get("indexes", {}).get("product_faq", "product_faq_vector")
+    retrieval_query = tenant_conf.get("retrieval_queries", {}).get("product_faq")
+
+    faq_node_property = tenant_conf.get("faq_node_property", "question")
+    results = AgentConfig.get_vector_store(product_faq_idx, text_node_property=faq_node_property, retrieval_query=retrieval_query).similarity_search_with_score(query, k=2, filter=filter_dict)
     if not results:
         return "No relevant product FAQ found."
     text = "\n\n".join([doc.page_content for doc, _ in results])
@@ -456,18 +201,31 @@ def query_product_faqs(query: str):
 
 def query_general_knowledge(query: str):
     """
-    Search blog articles and general lighting knowledge stored as Chunk nodes.
-    Uses full-text search on the chunk_text index.
+    Search knowledge articles stored as Chunk nodes using full-text search.
+    All configuration (index name, stop words) is driven by the tenant config.
     """
     try:
-        _STOP = {"the", "a", "an", "is", "are", "which", "one", "better", "vs",
-                 "or", "and", "for", "of", "in", "with", "what", "how", "do",
-                 "does", "can", "will", "between", "difference"}
+        from src.services.agent.context import tenant_context
+        from src.services.agent.routing import load_tenant_configs
+        tenant_id = tenant_context.get()
+        
+        configs = load_tenant_configs()
+        tenant_conf = configs.get(tenant_id, configs.get("default", {}))
+        
+        chunk_idx = tenant_conf.get("indexes", {}).get("chunk_fulltext", "chunk_text")
+        
+        # Merge universal function-word stop list with tenant-specific domain stop words
+        generic_stop = {"the", "a", "an", "is", "are", "which", "one", "better", "vs",
+                        "or", "and", "for", "of", "in", "with", "what", "how", "do",
+                        "does", "can", "will", "between", "difference"}
+        tenant_stop = set(tenant_conf.get("stop_words", []))
+        _STOP = generic_stop.union(tenant_stop)
+        
         # Strip Lucene special chars: + - && || ! ( ) { } [ ] ^ " ~ * ? : \ /
         _LUCENE_SPECIAL = re.compile(r'[+\-&|!(){}\[\]^"~*?:\\/.,?!\'"–—]')
         raw_tokens = []
         for word in query.split():
-            # First split on hyphens (Wave-Free → Wave, Free), then clean each part
+            # First split on hyphens, then clean each part
             parts = word.split("-")
             for part in parts:
                 clean = _LUCENE_SPECIAL.sub("", part).strip()
@@ -479,11 +237,11 @@ def query_general_knowledge(query: str):
         lucene_query = " AND ".join(good[:5])
         logger.info(f"GeneralKnowledgeDatabase | lucene={lucene_query!r}")
 
-        cypher = """
-        CALL db.index.fulltext.queryNodes("chunk_text", $q) YIELD node AS c, score
+        cypher = f"""
+        CALL db.index.fulltext.queryNodes("{chunk_idx}", $q) YIELD node AS c, score
         WHERE (c.tenant = $tenant_id OR c.tenant IS NULL) AND score > 0.5
         WITH c, score
-        RETURN c.text AS text, score
+        RETURN properties(c) AS details, score
         ORDER BY score DESC
         LIMIT 3
         """
@@ -503,7 +261,8 @@ def query_general_knowledge(query: str):
         # Concatenate results, strip markdown images/links to reduce noise
         combined = []
         for row in res:
-            text = row.get("text") or ""
+            details = row.get("details", {})
+            text = details.get("text") or details.get("content") or ""
             # Strip markdown image/link syntax
             text = re.sub(r"!\[.*?\]\(.*?\)", "", text)
             text = re.sub(r"\[.*?\]\(.*?\)", "", text)
@@ -525,63 +284,28 @@ def query_general_knowledge(query: str):
 def get_tools():
     return [
         StructuredTool.from_function(
-            name="SearchProductsDatabase",
-            func=search_products_db,
+            name="FilterGraphEntities",
+            func=filter_graph_entities,
             description=(
-                "Search, list, filter, or get product recommendations from the graph database. "
-                "Use this for: product listings, budget-based queries, application-based recommendations, "
-                "comparison queries (e.g. warm vs cool white), or any query that requires showing multiple products. "
-                "The tool auto-detects category, use case, and features from the query. "
+                "Search, list, and filter the primary entity (e.g. Products) from the graph database. "
+                "You MUST use the exact labels and values provided in the GRAPH METADATA schema. "
                 "\n\nParameters:"
-                "\n- query (str): natural language query. Examples: 'indoor ceiling lights', 'solar gate lights', "
-                "'garden bollard', 'waterproof outdoor lights', 'driveway lights', 'landscape lights for villa'"
-                "\n- category (str): explicit category override, one of: "
-                "'Gate & Pillar Lights', 'Solar Lights', 'Outdoor Wall Lights', 'Bollard & Garden Lights', "
-                "'Street Lights', 'Flood Lights', 'Indoor & Ceiling Lights', 'Panel Lights', "
-                "'Pathway & Step Lights', 'Bulkhead Lights', 'Divine & Temple Lights', 'General Purpose Lights'"
-                "\n- feature (str): one of: solar-powered, waterproof, IP65-rated, IP66-rated, motion-sensor, "
-                "dimmable, warm-white, cool-white, neutral-white, 3-in-1-colour, aluminium-body, "
-                "polycarbonate-body, surface-mount, wall-mount, rustproof, UV-protected, energy-efficient"
-                "\n- spec (str): technical spec filter. Examples: 'IP65', '12W', '18W', 'aluminium', 'beam angle'"
-                "\n- min_price / max_price (int): price range in INR (e.g. max_price=10000 for '₹10,000 budget')"
-                "\n- sort_by (str): rating_desc, rating_asc, price_asc, price_desc, reviews_desc"
-                "\n- limit (int): number of results (default 5)"
-                "\n\nEXAMPLES:"
-                "\n- 'show me indoor lights' → query='indoor lights'"
-                "\n- 'cheapest solar gate light' → query='solar gate', sort_by='price_asc'"
-                "\n- 'best rated panel lights' → query='panel lights', sort_by='rating_desc'"
-                "\n- 'lights for garden under ₹2000' → query='garden', max_price=2000"
-                "\n- 'waterproof outdoor lights with warm white' → query='outdoor warm waterproof'"
-                "\n- 'lights for a villa entrance and driveway' → query='gate driveway entrance'"
-                "\n- 'recommend lights for a hotel landscape' → query='landscape garden bollard'"
-                "\n- 'lights under ₹10000' → max_price=10000, sort_by='rating_desc'"
-                "\n- 'IP65 rated street lights' → query='street', spec='IP65'"
-                "\n- 'lights for heavy rainfall area' → feature='waterproof'"
-                "\n- 'warm white pathway lights' → query='pathway', feature='warm-white'"
-                "\n- 'energy efficient gate lights' → query='gate', feature='energy-efficient'"
+                "\n- filters (list): list of dictionaries, e.g., [{'label': 'Category', 'value': 'Solar Lights'}, {'label': 'Feature', 'value': 'waterproof'}]."
+                "\n- min_price / max_price (int): price range constraints."
+                "\n- sort_by (str): price_asc, price_desc, rating_desc."
+                "\n- limit (int): number of results (default 100)."
             ),
             return_direct=False
         ),
-        Tool(
-            name="GetCategoriesDatabase",
-            func=get_categories_db,
-            description=(
-                "Use this to fetch the list of available product categories from the database. "
-                "Call this when the user's request is extremely broad (e.g. 'show me products') "
-                "to find out what options exist before asking them a clarifying question."
-            )
-        ),
         StructuredTool.from_function(
-            name="ProductDetailsDatabase",
-            func=get_product_details_db,
+            name="EntityDetailsDatabase",
+            func=get_entity_details_db,
             description=(
-                "Use this when the user asks about ONE specific named product's details: "
-                "warranty, wattage, dimensions, material, IP rating, beam angle, lumens, "
-                "mounting type, colour temperature, or any other technical specification. "
-                "Examples: 'What is the warranty of the Artoo light?', "
-                "'Is the Athena light available in warm white?', "
-                "'What material is the Tacita fixture made of?', "
-                "'What are the dimensions of the Mini Olivia light?'"
+                "Use this when the user asks about ONE specific named entity's details (e.g., a specific product): "
+                "warranty, specs, dimensions, material, or any other connected metadata. "
+                "Examples: 'What is the warranty of Product X?', "
+                "'Is Product Y available in blue?', "
+                "'What material is Product Z made of?'"
             ),
             return_direct=False
         ),
@@ -606,11 +330,8 @@ def get_tools():
                 "'Is installation easy?', 'Can I install it myself?', "
                 "'Does the package include mounting hardware?', "
                 "'Can it be connected to a timer or smart switch?', "
-                "'Is it suitable for coastal areas?', "
-                "'How long do LEDs last?', 'What is the expected lifespan?', "
-                "'Will switching to LED reduce electricity bill?', "
-                "'Which is better: warm white or cool white?', "
-                "'Which light requires the least maintenance?', "
+                "'Which is better: Option A or Option B?', "
+                "'Which product requires the least maintenance?', "
                 "'Can this be used for commercial spaces?'"
             )
         ),
@@ -618,19 +339,14 @@ def get_tools():
             name="GeneralKnowledgeDatabase",
             func=query_general_knowledge,
             description=(
-                "Use this for educational, comparison, and 'how-to' questions about lighting concepts "
+                "Use this for educational, comparison, and 'how-to' questions about domain concepts "
                 "that are NOT about a specific product and NOT a company policy. "
-                "This searches Inventaa's blog articles and knowledge base. "
+                "This searches the company's blog articles and knowledge base. "
                 "Examples: "
-                "'Wave-Free LED Panel Lights vs Traditional LED Panel Lights', "
-                "'What is the difference between bollard and pathway lights?', "
-                "'How to choose outdoor lighting?', "
-                "'Benefits of solar lights', "
-                "'What is colour rendering index (CRI)?', "
-                "'How many lumens do I need for outdoor lighting?', "
-                "'LED vs fluorescent lights comparison', "
-                "'How to reduce electricity bill with LED lighting', "
-                "'What is IP rating in outdoor lights?'"
+                "'Concept A vs Concept B', "
+                "'What is the difference between category X and category Y?', "
+                "'How to choose the right product?', "
+                "'Benefits of feature Z'"
             )
         )
     ]

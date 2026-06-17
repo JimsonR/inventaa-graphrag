@@ -11,9 +11,9 @@ class AgentConfig:
     llm = None
     embeddings = None
     graph = None
-    general_vector_store = None
-    policy_vector_store = None
-    product_faq_vector_store = None
+    
+    # Cache for dynamically loaded vector stores
+    _vector_stores = {}
 
     @classmethod
     def initialize(cls):
@@ -47,27 +47,35 @@ class AgentConfig:
         cls.graph = Neo4jGraph(url=NEO4J_URI, username=NEO4J_USERNAME, password=NEO4J_PASSWORD)
         cls.graph.refresh_schema()
 
-        # 4. Connect to Vector Stores
-        cls.general_vector_store = Neo4jVector.from_existing_index(
-            embedding=cls.embeddings, url=NEO4J_URI, username=NEO4J_USERNAME, password=NEO4J_PASSWORD,
-            index_name="inventaa_faq_vector", text_node_property="text"
-        )
-
-        cls.policy_vector_store = Neo4jVector.from_existing_index(
-            embedding=cls.embeddings, url=NEO4J_URI, username=NEO4J_USERNAME, password=NEO4J_PASSWORD,
-            index_name="policy_vector", text_node_property="text"
-        )
-
-        cls.product_faq_vector_store = Neo4jVector.from_existing_index(
-            embedding=cls.embeddings, url=NEO4J_URI, username=NEO4J_USERNAME, password=NEO4J_PASSWORD,
-            index_name="product_faq_vector", text_node_property="question",
-            retrieval_query='''
-            MATCH (node)<-[:HAS_FAQ]-(p:Product)
-            RETURN "FAQ Match: " + node.question + "\\nAnswer: " + node.answer + 
-                   "\\n--> This belongs to Product: " + p.name + " (Price: ₹" + toString(p.price_num) + ")" AS text,
-                   score, {product_url: p.url} AS metadata
-            '''
-        )
-
         cls._initialized = True
         logger.info("AgentConfig initialized.")
+
+    @classmethod
+    def get_vector_store(cls, index_name: str, text_node_property: str = "text", retrieval_query: str = None):
+        """
+        Lazily initialize and return a Neo4jVector for the given index.
+        This allows multi-tenancy where different tenants use different indices.
+        """
+        if not index_name:
+            raise ValueError("index_name cannot be empty")
+            
+        cache_key = f"{index_name}_{text_node_property}_{retrieval_query or 'default'}"
+        
+        if cache_key not in cls._vector_stores:
+            logger.info(f"Initializing Neo4jVector for index: {index_name}")
+            
+            NEO4J_URI = os.getenv("NEO4J_URI", "").replace("neo4j+s://", "neo4j+ssc://")
+            NEO4J_USERNAME = os.getenv("NEO4J_USERNAME")
+            NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD")
+            
+            cls._vector_stores[cache_key] = Neo4jVector.from_existing_index(
+                embedding=cls.embeddings, 
+                url=NEO4J_URI, 
+                username=NEO4J_USERNAME, 
+                password=NEO4J_PASSWORD,
+                index_name=index_name, 
+                text_node_property=text_node_property,
+                retrieval_query=retrieval_query
+            )
+            
+        return cls._vector_stores[cache_key]

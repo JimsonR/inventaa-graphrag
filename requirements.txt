@@ -6,5 +6,8 @@ numpy
 langchain-openai
 langchain-neo4j
 langgraph
-
 supabase
+mem0ai
+pyyaml
+pinecone
+azure-identity

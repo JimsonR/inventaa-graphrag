@@ -1,168 +1,38 @@
-"""
-routing.py — Deterministic intent → tool selection mapping.
-
-Design principles:
-1. The routing is PURELY rule-based. No LLM calls, no probabilistic scoring.
-2. Each keyword belongs to EXACTLY ONE intent (no overlap). This prevents regressions.
-3. The caller can pass an explicit `intent` to bypass classification entirely.
-4. Intents map to a fixed set of tools via a lookup table.
-
-Intent hierarchy (checked in order to avoid ambiguity):
-  SEARCH    → Show / find / list / filter products
-  DETAIL    → One named product's specs, wattage, warranty, material
-  POLICY    → Shipping, returns, warranty claims, bulk pricing
-  ADVICE    → Installation, suitability, lifespan FAQs
-  KNOWLEDGE → Educational / comparison / concept articles
-"""
-
 import logging
+import yaml
+import os
 from typing import Tuple, Optional
-from pydantic import BaseModel, Field
 from langchain_core.messages import SystemMessage, HumanMessage
 
 logger = logging.getLogger(__name__)
 
-# ─── Intent constants ─────────────────────────────────────────────────────────
-INTENT_SEARCH    = "search"
-INTENT_DETAIL    = "detail"
-INTENT_POLICY    = "policy"
-INTENT_ADVICE    = "advice"
-INTENT_KNOWLEDGE = "knowledge"
+_configs = None
 
-# ─── Mapping: external upstream intent strings → internal intents ─────────────
-EXTERNAL_INTENT_MAP = {}
+def load_tenant_configs():
+    global _configs
+    if _configs is None:
+        config_path = os.path.join(os.path.dirname(__file__), "tenant_configs.yaml")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                _configs = yaml.safe_load(f)
+        except Exception as e:
+            logger.error(f"Failed to load tenant_configs.yaml: {e}")
+            _configs = {
+                "default": {
+                    "system_prompt": "You are a helpful assistant.",
+                    "router_prompt": "Classify the intent.",
+                    "fallback_message": "I cannot answer this right now."
+                }
+            }
+    return _configs
 
-# ─── Per-intent compact system prompts ────────────────────────────────────────
-_BASE_RULE = (
-    "You are an AI sales assistant for Inventaa, an Indian LED lighting brand.\n"
-    "RULES:\n"
-    "1. ALWAYS use tools to query the database before answering. If the user's request is extremely broad (e.g. 'show me products'), DO NOT call `SearchProductsDatabase`. Instead, call `GetCategoriesDatabase` to check what categories exist in the graph, and use that data to ask a clarifying question to narrow down their choice.\n"
-    "2. If the tool returns no data, say: \"I'm sorry, I don't have that information in our database.\"\n"
-    "3. NEVER hallucinate product names, prices, specs, or policies.\n"
-    "4. CRITICAL: NEVER manually list or type out product options as text. If you need to recommend or show products, you MUST call the `SearchProductsDatabase` tool so the UI can render them with images. Do not summarize products from conversation history into text.\n\n"
-)
-
-INTENT_PROMPTS = {
-    INTENT_SEARCH: (
-        _BASE_RULE +
-        "Use SearchProductsDatabase to find products.\n"
-        "Pass the user's natural language as the 'query' param.\n"
-        "Use max_price for budget limits. Use sort_by for cheapest/best-rated.\n"
-        "Available categories: Gate & Pillar Lights | Solar Lights | Outdoor Wall Lights | "
-        "Bollard & Garden Lights | Street Lights | Flood Lights | Indoor & Ceiling Lights | "
-        "Panel Lights | Pathway & Step Lights | Bulkhead Lights | Divine & Temple Lights | General Purpose Lights"
-    ),
-    INTENT_DETAIL: (
-        _BASE_RULE +
-        "Use ProductDetailsDatabase to look up ONE specific named product.\n"
-        "Pass the product name as 'product_name'. "
-        "The tool returns wattage options, colour options, specs, and warranty."
-    ),
-    INTENT_POLICY: (
-        _BASE_RULE +
-        "Use PolicyVectorDatabase to answer questions about company policies.\n"
-        "Topics: shipping, delivery time, return/replacement, warranty claims, "
-        "bulk pricing, dealer rates, damaged/wrong items."
-    ),
-    INTENT_ADVICE: (
-        _BASE_RULE +
-        "Use ProductAdviceDatabase to answer general product FAQs NOT tied to a specific product.\n"
-        "Topics: installation, mounting, smart switch/timer compatibility, "
-        "coastal suitability, LED lifespan, electricity savings, maintenance."
-    ),
-    INTENT_KNOWLEDGE: (
-        _BASE_RULE +
-        "Use GeneralKnowledgeDatabase to answer educational or comparison questions about lighting.\n"
-        "Topics: LED vs fluorescent, wave-free vs traditional, what is IP rating, "
-        "how to choose outdoor lighting, benefits of solar, CRI, lumens guide."
-    ),
-}
-
-# ─── Per-intent allowed tool names ────────────────────────────────────────────
-INTENT_TOOLS = {
-    INTENT_SEARCH:    ["SearchProductsDatabase", "GetCategoriesDatabase"],
-    INTENT_DETAIL:    ["ProductDetailsDatabase", "SearchProductsDatabase"],
-    INTENT_POLICY:    ["PolicyVectorDatabase"],
-    INTENT_ADVICE:    ["ProductAdviceDatabase", "GeneralKnowledgeDatabase"],
-    INTENT_KNOWLEDGE: ["GeneralKnowledgeDatabase", "ProductAdviceDatabase"],
-}
-
-# ─── Fast-Path Overrides ──────────────────────────────────────────────────────
-# Hard SEARCH overrides: query clearly asks to find/list products
-# These take precedence over LLM classification to save latency.
-_SEARCH_OVERRIDES = frozenset([
-    "show me", "show ", "find me", "find products",
-    "list products", "list lights", "get me",
-    "display products", "browse",
-    "lights for ", "light for ", "lamps for ",
-    "lights under ", "products under ",
-    "under rs", "under ₹", "under inr", "under rupees", "within rs",
-    "cheapest", "lowest rated", "highest rated", "best rated",
-    "lowest price", "best price", "affordable",
-    "ip65 rated", "ip66 rated", "ip67 rated",
-    "recommend lighting", "suggest lighting",
-    "what solar lights", "what gate lights", "what outdoor lights",
-    "which lights should", "which light should",
-])
-
-# ─── Agentic Intent Classifier ────────────────────────────────────────────────
-
-class IntentClassification(BaseModel):
-    """Schema for routing a user query to the correct intent."""
-    intent: str = Field(
-        ...,
-        description="The classified intent. Must be one of: 'search', 'detail', 'policy', 'advice', or 'knowledge'."
-    )
-
-_ROUTER_SYSTEM_PROMPT = """You are an intent classification router for an LED lighting company.
-Classify the user's query into exactly ONE of the following intents:
-
-- "search" : Browsing, finding, recommending, or filtering products by budget/rating/type.
-- "detail" : Asking for specific specs (wattage, dimensions, warranty, material) of a NAMED product.
-- "policy" : Questions about shipping, delivery, returns, warranty claims, or bulk pricing/dealer rates.
-- "advice" : Questions about installation, durability (waterproof, coastal, weather), or maintenance (NO named product).
-- "knowledge" : Educational concepts (what is IP rating/CRI/lumens), comparisons (LED vs solar, warm vs cool), or general buying guides.
-
-If the query does not perfectly match one, select the closest fit. If completely unrelated to lighting or company operations, default to "search".
-"""
-
-def classify_intent(query: str, llm=None) -> str:
+def get_tenant_prompts(tenant_id: str) -> dict:
     """
-    Classifies intent using a fast LLM call, with deterministic fast-paths for obvious searches.
+    Retrieves the prompts for a specific tenant, falling back to 'default'.
     """
-    q = query.lower()
-
-    # 1. Fast-Path: Explicit search queries
-    if any(kw in q for kw in _SEARCH_OVERRIDES):
-        logger.info(f"[Router] intent=search (fast-path override)  query={query!r}")
-        return INTENT_SEARCH
-
-    # 2. Agentic Classification
-    if llm is None:
-        logger.warning("[Router] No LLM provided to classifier, defaulting to 'search'.")
-        return INTENT_SEARCH
-
-    try:
-        router = llm.with_structured_output(IntentClassification)
-        messages = [
-            SystemMessage(content=_ROUTER_SYSTEM_PROMPT),
-            HumanMessage(content=query)
-        ]
-        result = router.invoke(messages)
-        intent = result.intent.lower()
-        
-        # Validate LLM output against known intents
-        if intent not in INTENT_PROMPTS:
-            logger.warning(f"[Router] LLM returned unknown intent '{intent}', defaulting to 'search'.")
-            intent = INTENT_SEARCH
-            
-        logger.info(f"[Router] intent={intent} (agentic)  query={query!r}")
-        return intent
-
-    except Exception as e:
-        logger.error(f"[Router] Agentic classification failed: {e}. Defaulting to 'search'.")
-        return INTENT_SEARCH
-
+    configs = load_tenant_configs()
+    tenant_key = tenant_id if tenant_id and tenant_id in configs else "default"
+    return configs.get(tenant_key, configs.get("default"))
 
 def get_intent_config(
     query: str,
@@ -171,27 +41,15 @@ def get_intent_config(
     explicit_intent: Optional[str] = None,
 ) -> Tuple[str, list]:
     """
-    Returns (system_prompt, filtered_tools) for the given query.
-
-    Args:
-        query: The user's message text.
-        all_tools: Full list of Tool objects from get_tools().
-        llm: The language model used for agentic intent classification.
-        explicit_intent: If provided, bypasses keyword classification entirely.
+    Returns the system prompt and allowed tools for the given query.
+    For the graph-aware implementation, we return the unified system prompt from the tenant config
+    and all tools, allowing the LLM to use its metadata awareness to choose the right tool.
     """
-    if explicit_intent and explicit_intent in INTENT_PROMPTS:
-        intent = explicit_intent
-        logger.info(f"[Router] intent={intent} (explicit override)")
-    else:
-        intent = classify_intent(query, llm=llm)
-
-    prompt = INTENT_PROMPTS[intent]
-    allowed_names = set(INTENT_TOOLS[intent])
-    filtered = [t for t in all_tools if t.name in allowed_names]
-
-    if not filtered:
-        logger.warning(f"[Router] No tools matched intent={intent}, using all tools.")
-        filtered = all_tools
-
-    logger.info(f"[Router] intent={intent} | tools={[t.name for t in filtered]}")
-    return prompt, filtered
+    from src.services.agent.context import tenant_context
+    tenant_id = tenant_context.get()
+    
+    prompts = get_tenant_prompts(tenant_id)
+    system_prompt = prompts.get("system_prompt", "You are a helpful graph-aware assistant.")
+    
+    # We no longer strictly filter tools. The LLM has the graph schema and can choose.
+    return system_prompt, all_tools

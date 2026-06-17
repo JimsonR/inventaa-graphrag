@@ -10,7 +10,9 @@ from langgraph.prebuilt import ToolNode
 
 from src.services.agent.config import AgentConfig
 from src.services.agent.tools import get_tools
-from src.services.agent.routing import get_intent_config
+from src.services.agent.routing import get_intent_config, get_tenant_prompts
+from src.services.agent.graph_schema import get_graph_schema
+from src.services.agent.entity_memory import get_user_entities
 
 # Configure basic logging to ensure INFO statements show up in uvicorn
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -22,6 +24,7 @@ class AgentState(TypedDict):
     messages: Annotated[Sequence[BaseMessage], operator.add]
     iterations: int
     last_product_search_result: Optional[str]
+    tenant_id: Optional[str]
 
 
 def build_graph(system_prompt: str, tools: list):
@@ -52,7 +55,7 @@ def build_graph(system_prompt: str, tools: list):
         for msg in reversed(messages):
             if isinstance(msg, ToolMessage):
                 logger.info(f"[Capture Node] Tool '{msg.name}' returned output (length {len(msg.content)})")
-                if msg.name == "SearchProductsDatabase":
+                if msg.name == "FilterGraphEntities":
                     last_product_result = msg.content
                 break
         return {"last_product_search_result": last_product_result}
@@ -82,38 +85,16 @@ def build_graph(system_prompt: str, tools: list):
         last_ai_msg = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
         last_tool_was_search = bool(product_search_result) and last_ai_msg and not last_ai_msg.tool_calls
 
+        tenant_id = state.get("tenant_id")
+        prompts = get_tenant_prompts(tenant_id)
+
         if last_tool_was_search and product_search_result:
-            eval_prompt = f"""You are a strict product relevance judge for Inventaa, an Indian outdoor lighting brand.
-The user asked: "{user_query}"
-
-The product search tool returned the following JSON:
-{product_search_result}
-
-Decide if these products genuinely match what the user requested.
-Rules:
-- If the user asked for "indoor" products but ALL results are "outdoor", "exterior", or "gate" products -> REJECT.
-- If the results are completely unrelated product categories -> REJECT.
-- If the JSON is empty [] -> ACCEPT. This is a valid response meaning we do not carry the requested product.
-- If the results are reasonably relevant to the user's query -> ACCEPT.
-
-Output ONLY one of:
-- "VALID" if the results match (or if the JSON is empty [])
-- A short feedback sentence if they do not (e.g. "Results are exterior gate lights but user wants indoor lights. Tell user we don't carry indoor lights.")"""
+            eval_prompt_template = prompts.get("eval_prompt", "You are a strict product judge. Query: {query}, Result: {result}. Reply VALID or reason.")
+            eval_prompt = eval_prompt_template.format(query=user_query, result=product_search_result)
         else:
             last_ai_content = last_ai_msg.content if last_ai_msg else ""
-            eval_prompt = f"""You are a lenient QA evaluator for Inventaa.
-The user asked: "{user_query}"
-The agent responded: "{last_ai_content}"
-
-Output ONLY "VALID" unless the response has one of these CRITICAL failures:
-- The agent made up information not supported by any tool (hallucinated)
-- The agent said it doesn't know, but the response actually contains the answer
-- The agent gave the WRONG product (completely wrong product name)
-- The response is completely empty or a server error message
-
-DO NOT reject for minor phrasing preferences (e.g. saying "available in 18W" vs "only 18W available").
-DO NOT reject policy, FAQ, or product detail answers that contain the relevant facts.
-If in doubt, output "VALID"."""
+            lenient_eval_template = prompts.get("lenient_eval_prompt", "You are a lenient QA evaluator. Query: {query}, Agent: {agent}. Reply VALID or reason.")
+            eval_prompt = lenient_eval_template.format(query=user_query, agent=last_ai_content)
 
         eval_res = AgentConfig.llm.invoke([SystemMessage(content=eval_prompt)])
         eval_content = eval_res.content.strip()
@@ -188,34 +169,49 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
         system_prompt, active_tools = get_intent_config(query_text, all_tools, llm=AgentConfig.llm)
         executor = build_graph(system_prompt, active_tools)
 
+        # Format system prompt with metadata and entities
+        schema = get_graph_schema(tenant_id)
+        # Using session_id as the user_id for Mem0 (or phone number if passed)
+        # Here we use session_id to get cross-message context
+        entities = get_user_entities(session_id)
+        
+        formatted_system_prompt = system_prompt.replace("{graph_schema}", schema).replace("{user_entities}", entities)
+        
         # Load conversational memory
         from src.services.agent.memory import get_recent_messages
         history = get_recent_messages(session_id=session_id, exclude_message_id=message_id, limit=5)
         
-        messages = [SystemMessage(content=system_prompt)] + history + [HumanMessage(content=query_text)]
+        messages = [SystemMessage(content=formatted_system_prompt)] + history + [HumanMessage(content=query_text)]
 
         final_state = executor.invoke({
             "messages": messages,
             "iterations": 0,
             "last_product_search_result": None,
+            "tenant_id": tenant_id,
         })
 
-        # If there was a validated product search result, return it directly (no LLM synthesis)
-        product_result = final_state.get("last_product_search_result")
-        if product_result:
-            try:
-                parsed_json = json.loads(product_result)
-                logger.info(f"--- GRAPH FINISHED: Returning raw JSON array from tool ({len(parsed_json)} items) ---")
-                return parsed_json
-            except (json.JSONDecodeError, TypeError):
-                logger.warning("--- GRAPH FINISHED: Failed to parse tool JSON, falling back to conversational ---")
-
-        # Otherwise return the last AIMessage content (policy / FAQ / detail answer)
+        # Get the LLM's synthesized conversational answer
         last_ai = next(
             (m for m in reversed(final_state["messages"]) if isinstance(m, AIMessage) and not m.tool_calls),
             None
         )
-        output = last_ai.content if last_ai else "I'm sorry, I encountered an error. Please try again."
+        ai_text = last_ai.content if last_ai else "I'm sorry, I encountered an error. Please try again."
+
+        # If there was a product search, return a structured dict with both text and products
+        product_result = final_state.get("last_product_search_result")
+        if product_result:
+            try:
+                parsed_json = json.loads(product_result)
+                logger.info(f"--- GRAPH FINISHED: Returning text + raw JSON array ({len(parsed_json)} items) ---")
+                return {
+                    "text": ai_text,
+                    "products": parsed_json
+                }
+            except (json.JSONDecodeError, TypeError):
+                logger.warning("--- GRAPH FINISHED: Failed to parse tool JSON, falling back to conversational ---")
+
+        # Otherwise return just the text
+        output = ai_text
 
         try:
             parsed = json.loads(output)

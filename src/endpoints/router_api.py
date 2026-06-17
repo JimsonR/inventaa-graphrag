@@ -4,6 +4,7 @@ from typing import Optional, List, Any, Union
 from datetime import datetime
 
 from src.services.retrieve import ask_agent
+from src.services.agent.entity_memory import extract_and_store_entities
 
 router = APIRouter()
 
@@ -54,6 +55,11 @@ def route_message(message: IncomingMessage):
             # Temporary mapping: the WhatsApp bot only accepts tenant_swadhya_foods_001 for now
             if tenant == "tenant_swadhya_foods_001":
                 tenant = "inventaa"
+
+            # Extract entities via Mem0 before querying graph
+            user_id_for_mem0 = message.session_id or "unknown_session"
+            if message.text:
+                extract_and_store_entities(message.text, user_id=user_id_for_mem0, metadata={"tenant": tenant})
 
             # Route to the LangChain Hybrid Agent, scoped to the tenant
             answer = ask_agent(message.text, tenant_id=tenant, session_id=message.session_id, message_id=message.message_id)
