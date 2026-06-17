@@ -201,7 +201,7 @@ def search_products_db(
     min_price: Optional[int] = None,
     max_price: Optional[int] = None,
     sort_by: Optional[str] = None,
-    limit: int = 5
+    limit: int = 100
 ):
     """
     Search and filter products from the Neo4j graph database.
@@ -545,7 +545,7 @@ def get_tools():
                 "\n- spec (str): technical spec filter. Examples: 'IP65', '12W', '18W', 'aluminium', 'beam angle'"
                 "\n- min_price / max_price (int): price range in INR (e.g. max_price=10000 for '₹10,000 budget')"
                 "\n- sort_by (str): rating_desc, rating_asc, price_asc, price_desc, reviews_desc"
-                "\n- limit (int): number of results (default 5)"
+                "\n- limit (int): number of results (default 100)"
                 "\n\nEXAMPLES:"
                 "\n- 'show me indoor lights' → query='indoor lights'"
                 "\n- 'cheapest solar gate light' → query='solar gate', sort_by='price_asc'"

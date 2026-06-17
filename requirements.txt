@@ -1,3 +1,5 @@
+./dummy_qdrant_client
+./dummy_grpcio
 ./dummy_scipy
 fastapi
 pydantic
@@ -8,3 +10,5 @@ langchain-neo4j
 langgraph
 
 supabase
+mem0ai
+pinecone-client

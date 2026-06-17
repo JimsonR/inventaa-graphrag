@@ -56,7 +56,7 @@ def route_message(message: IncomingMessage):
                 tenant = "inventaa"
 
             # Route to the LangChain Hybrid Agent, scoped to the tenant
-            answer = ask_agent(message.text, tenant_id=tenant, session_id=message.session_id, message_id=message.message_id)
+            answer = ask_agent(message.text, tenant_id=tenant, session_id=message.session_id, message_id=message.message_id, user_id=message.session_id)
 
             return {
                 "status": "routed_to_knowledge_base",

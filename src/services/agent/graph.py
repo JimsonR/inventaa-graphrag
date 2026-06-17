@@ -164,7 +164,7 @@ If in doubt, output "VALID"."""
 _initialized = False
 
 
-def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, message_id: str = None):
+def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, message_id: str = None, user_id: str = None):
     """
     Invokes the agent with the user's query.
     Returns:
@@ -183,14 +183,25 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
         
         logger.info(f"--- STARTING GRAPH EXECUTION FOR QUERY: '{query_text}' ---")
 
-        # Classify query intent → get focused prompt + only the relevant tools
-        all_tools = get_tools()
-        system_prompt, active_tools = get_intent_config(query_text, all_tools, llm=AgentConfig.llm)
-        executor = build_graph(system_prompt, active_tools)
-
-        # Load conversational memory
+        # Load conversational memory FIRST so the router can use it to disambiguate intent
         from src.services.agent.memory import get_recent_messages
         history = get_recent_messages(session_id=session_id, exclude_message_id=message_id, limit=5)
+        
+        # Format history for router
+        history_text = "\n".join([f"{'User' if isinstance(m, HumanMessage) else 'Agent'}: {m.content}" for m in history[-2:]])
+        
+        # Classify query intent → get focused prompt + only the relevant tools
+        all_tools = get_tools()
+        system_prompt, active_tools = get_intent_config(query_text, all_tools, llm=AgentConfig.llm, history_context=history_text)
+        executor = build_graph(system_prompt, active_tools)
+        
+        # Load Long-Term Memory (Mem0)
+        from src.services.agent.mem0_client import fetch_long_term_context, store_long_term_context
+        long_term_context = fetch_long_term_context(query_text, user_id)
+        
+        if long_term_context:
+            logger.info(f"Injected long term context for user {user_id}")
+            system_prompt += long_term_context
         
         messages = [SystemMessage(content=system_prompt)] + history + [HumanMessage(content=query_text)]
 
@@ -217,12 +228,21 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
         )
         output = last_ai.content if last_ai else "I'm sorry, I encountered an error. Please try again."
 
+        # Helper to trigger async memory ingestion without blocking the response
+        def run_background_storage(response_text):
+            import threading
+            threading.Thread(target=store_long_term_context, args=(query_text, response_text, user_id), daemon=True).start()
+
         try:
             parsed = json.loads(output)
             logger.info("--- GRAPH FINISHED: Returning JSON from agent ---")
+            # We don't necessarily store raw JSON product lists into Mem0, 
+            # but you can if you want. Let's just return.
             return parsed
         except (json.JSONDecodeError, TypeError):
             logger.info(f"--- GRAPH FINISHED: Returning text from agent ({len(output)} chars) ---")
+            # Store the conversational answer in Mem0
+            run_background_storage(output)
             return output
 
     except Exception as e:

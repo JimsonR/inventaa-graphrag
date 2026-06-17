@@ -54,13 +54,15 @@ INTENT_PROMPTS = {
     ),
     INTENT_DETAIL: (
         _BASE_RULE +
-        "Use ProductDetailsDatabase to look up ONE specific named product.\n"
+        "CRITICAL: ALWAYS use the ProductDetailsDatabase tool to look up the specific named product before answering. "
+        "Do NOT rely on conversational memory for specs or warranty. "
         "Pass the product name as 'product_name'. "
-        "The tool returns wattage options, colour options, specs, and warranty."
+        "The tool returns wattage options, colour options, specs, and warranty directly from the Neo4j database."
     ),
     INTENT_POLICY: (
         _BASE_RULE +
-        "Use PolicyVectorDatabase to answer questions about company policies.\n"
+        "If the user is asking about the warranty for a specific product from the conversation, use ProductDetailsDatabase.\n"
+        "Otherwise, use PolicyVectorDatabase to answer questions about company policies.\n"
         "Topics: shipping, delivery time, return/replacement, warranty claims, "
         "bulk pricing, dealer rates, damaged/wrong items."
     ),
@@ -82,7 +84,7 @@ INTENT_PROMPTS = {
 INTENT_TOOLS = {
     INTENT_SEARCH:    ["SearchProductsDatabase", "GetCategoriesDatabase"],
     INTENT_DETAIL:    ["ProductDetailsDatabase", "SearchProductsDatabase"],
-    INTENT_POLICY:    ["PolicyVectorDatabase"],
+    INTENT_POLICY:    ["PolicyVectorDatabase", "ProductDetailsDatabase"],
     INTENT_ADVICE:    ["ProductAdviceDatabase", "GeneralKnowledgeDatabase"],
     INTENT_KNOWLEDGE: ["GeneralKnowledgeDatabase", "ProductAdviceDatabase"],
 }
@@ -118,15 +120,15 @@ _ROUTER_SYSTEM_PROMPT = """You are an intent classification router for an LED li
 Classify the user's query into exactly ONE of the following intents:
 
 - "search" : Browsing, finding, recommending, or filtering products by budget/rating/type.
-- "detail" : Asking for specific specs (wattage, dimensions, warranty, material) of a NAMED product.
-- "policy" : Questions about shipping, delivery, returns, warranty claims, or bulk pricing/dealer rates.
+- "detail" : Asking for specific specs (wattage, dimensions, warranty, material) of a product, OR asking a follow-up question (like "warranty", "price") about a product recently mentioned in the conversation context.
+- "policy" : General questions about shipping, delivery, returns, general warranty claims procedure, or bulk pricing/dealer rates.
 - "advice" : Questions about installation, durability (waterproof, coastal, weather), or maintenance (NO named product).
 - "knowledge" : Educational concepts (what is IP rating/CRI/lumens), comparisons (LED vs solar, warm vs cool), or general buying guides.
 
 If the query does not perfectly match one, select the closest fit. If completely unrelated to lighting or company operations, default to "search".
 """
 
-def classify_intent(query: str, llm=None) -> str:
+def classify_intent(query: str, llm=None, history_context: str = "") -> str:
     """
     Classifies intent using a fast LLM call, with deterministic fast-paths for obvious searches.
     """
@@ -144,8 +146,13 @@ def classify_intent(query: str, llm=None) -> str:
 
     try:
         router = llm.with_structured_output(IntentClassification)
+        
+        system_content = _ROUTER_SYSTEM_PROMPT
+        if history_context:
+            system_content += f"\n\nRecent Conversation Context to help disambiguate:\n{history_context}"
+            
         messages = [
-            SystemMessage(content=_ROUTER_SYSTEM_PROMPT),
+            SystemMessage(content=system_content),
             HumanMessage(content=query)
         ]
         result = router.invoke(messages)
@@ -169,6 +176,7 @@ def get_intent_config(
     all_tools: list,
     llm=None,
     explicit_intent: Optional[str] = None,
+    history_context: str = ""
 ) -> Tuple[str, list]:
     """
     Returns (system_prompt, filtered_tools) for the given query.
@@ -183,7 +191,7 @@ def get_intent_config(
         intent = explicit_intent
         logger.info(f"[Router] intent={intent} (explicit override)")
     else:
-        intent = classify_intent(query, llm=llm)
+        intent = classify_intent(query, llm=llm, history_context=history_context)
 
     prompt = INTENT_PROMPTS[intent]
     allowed_names = set(INTENT_TOOLS[intent])
