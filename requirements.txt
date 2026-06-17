@@ -11,4 +11,4 @@ langgraph
 
 supabase
 mem0ai
-pinecone-client
+pinecone
