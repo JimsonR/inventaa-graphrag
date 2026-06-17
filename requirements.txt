@@ -1,6 +1,6 @@
-./dummy_qdrant_client
-./dummy_grpcio
-./dummy_scipy
+qdrant-client @ ./dummy_qdrant_client
+grpcio @ ./dummy_grpcio
+scipy @ ./dummy_scipy
 fastapi
 pydantic
 neo4j
