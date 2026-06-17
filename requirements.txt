@@ -12,3 +12,4 @@ langgraph
 supabase
 mem0ai
 pinecone
+azure-identity
