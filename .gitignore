@@ -8,6 +8,7 @@ __pycache__/
 # Environment Variables (CRITICAL)
 .env
 .env.*
+.test_env
 
 # IDEs and Editors
 .vscode/
