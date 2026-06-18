@@ -294,7 +294,7 @@ MATCH (cat:Category {name: $category})-[:HAS_PRODUCT]->(p:Product)
 
         cypher_query += f"""
 OPTIONAL MATCH (p)-[:HAS_WARRANTY]->(w:Warranty)
-OPTIONAL MATCH (p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.type) CONTAINS 'replacement' OR toLower(pol.type) CONTAINS 'exchange'
+OPTIONAL MATCH (p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'replacement' OR toLower(pol.title) CONTAINS 'exchange'
 RETURN DISTINCT p.sku AS sku, p.name AS name, p.price_num AS price_num,
        p.regular_price AS regular_price, p.discount_percentage AS discount_percentage,
        p.image_url AS image_url, p.url AS url, p.rating_score AS rating,
@@ -347,7 +347,7 @@ def get_product_details_db(product_name: str):
         WITH p, score
         ORDER BY score DESC LIMIT 1
         OPTIONAL MATCH (p)-[:HAS_WARRANTY]->(w:Warranty)
-        OPTIONAL MATCH (p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.type) CONTAINS 'replacement' OR toLower(pol.type) CONTAINS 'exchange'
+        OPTIONAL MATCH (p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'replacement' OR toLower(pol.title) CONTAINS 'exchange'
         OPTIONAL MATCH (p)-[:HAS_SPEC]->(s:Spec)
         OPTIONAL MATCH (p)-[:AVAILABLE_IN_WATTAGE]->(wo:WattageOption)
         OPTIONAL MATCH (p)-[:AVAILABLE_IN_COLOR]->(co:ColorOption)
