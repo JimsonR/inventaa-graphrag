@@ -62,9 +62,10 @@ INTENT_PROMPTS = {
     INTENT_POLICY: (
         _BASE_RULE +
         "If the user is asking about the warranty for a specific product from the conversation, use ProductDetailsDatabase.\n"
-        "Otherwise, use PolicyVectorDatabase to answer questions about company policies.\n"
+        "Use GeneralKnowledgeDatabase to search for discounts, offers, and shipping/replacement policies.\n"
+        "Otherwise, use PolicyVectorDatabase to answer questions about general company policies.\n"
         "Topics: shipping, delivery time, return/replacement, warranty claims, "
-        "bulk pricing, dealer rates, damaged/wrong items."
+        "bulk pricing, dealer rates, damaged/wrong items, discounts, offers."
     ),
     INTENT_ADVICE: (
         _BASE_RULE +
@@ -84,7 +85,7 @@ INTENT_PROMPTS = {
 INTENT_TOOLS = {
     INTENT_SEARCH:    ["SearchProductsDatabase", "GetCategoriesDatabase"],
     INTENT_DETAIL:    ["ProductDetailsDatabase", "SearchProductsDatabase"],
-    INTENT_POLICY:    ["PolicyVectorDatabase", "ProductDetailsDatabase"],
+    INTENT_POLICY:    ["PolicyVectorDatabase", "ProductDetailsDatabase", "GeneralKnowledgeDatabase"],
     INTENT_ADVICE:    ["ProductAdviceDatabase", "GeneralKnowledgeDatabase"],
     INTENT_KNOWLEDGE: ["GeneralKnowledgeDatabase", "ProductAdviceDatabase"],
 }
