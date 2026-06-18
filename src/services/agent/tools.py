@@ -293,10 +293,13 @@ MATCH (cat:Category {name: $category})-[:HAS_PRODUCT]->(p:Product)
         sort_clause = sort_map.get((sort_by or "").lower(), "ORDER BY p.rating_score DESC")
 
         cypher_query += f"""
+OPTIONAL MATCH (p)-[:HAS_WARRANTY]->(w:Warranty)
+OPTIONAL MATCH (p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.type) CONTAINS 'replacement' OR toLower(pol.type) CONTAINS 'exchange'
 RETURN DISTINCT p.sku AS sku, p.name AS name, p.price_num AS price_num,
        p.regular_price AS regular_price, p.discount_percentage AS discount_percentage,
        p.image_url AS image_url, p.url AS url, p.rating_score AS rating,
-       p.review_count AS review_count, p.tenant AS tenant, p.feature_descriptions AS feature_descriptions
+       p.review_count AS review_count, p.tenant AS tenant, p.feature_descriptions AS feature_descriptions,
+       p.installation_url AS installation_url, w.description AS warranty, pol.content AS replacement_exchange_policy
 {sort_clause}
 LIMIT $limit
 """
@@ -344,11 +347,14 @@ def get_product_details_db(product_name: str):
         WITH p, score
         ORDER BY score DESC LIMIT 1
         OPTIONAL MATCH (p)-[:HAS_WARRANTY]->(w:Warranty)
+        OPTIONAL MATCH (p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.type) CONTAINS 'replacement' OR toLower(pol.type) CONTAINS 'exchange'
         OPTIONAL MATCH (p)-[:HAS_SPEC]->(s:Spec)
         OPTIONAL MATCH (p)-[:AVAILABLE_IN_WATTAGE]->(wo:WattageOption)
         OPTIONAL MATCH (p)-[:AVAILABLE_IN_COLOR]->(co:ColorOption)
         RETURN p.name AS name, p.price_num AS price,
                p.feature_descriptions AS feature_descriptions,
+               p.installation_url AS installation_url,
+               pol.content AS replacement_exchange_policy,
                w.description AS warranty_info, w.duration_years AS warranty_duration,
                collect(DISTINCT s.key + ': ' + s.value) AS specs,
                collect(DISTINCT wo.name) AS wattages,
@@ -381,11 +387,17 @@ def get_product_details_db(product_name: str):
         if colors:
             output += f"Available Colors: {', '.join(sorted(colors))}\n"
 
-        # Warranty
+        # Warranty & Policies
         if product.get('warranty_info'):
             output += f"Warranty: {product.get('warranty_info')}\n"
         else:
             output += "Warranty: This product carries Inventaa's standard 1-Year replacement warranty. Contact support to claim.\n"
+            
+        if product.get('replacement_exchange_policy'):
+            output += f"Replacement Policy: {product.get('replacement_exchange_policy')}\n"
+            
+        if product.get('installation_url'):
+            output += f"Installation Image: {product.get('installation_url')}\n"
 
         # All specs
         if product.get('specs'):
