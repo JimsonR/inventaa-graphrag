@@ -531,7 +531,7 @@ def get_tools():
                 "Search, list, filter, or get product recommendations from the graph database. "
                 "Use this for: product listings, budget-based queries, application-based recommendations, "
                 "comparison queries (e.g. warm vs cool white), or any query that requires showing multiple products. "
-                "The tool auto-detects category, use case, and features from the query. "
+                "The tool auto-detects category, use case, and features from the query. If the user's long-term memory or context specifies a preference (like a specific category), you could explicitly set the corresponding parameter (e.g. `category` or `feature`) rather than relying purely on the current conversational text."
                 "\n\nParameters:"
                 "\n- query (str): natural language query. Examples: 'indoor ceiling lights', 'solar gate lights', "
                 "'garden bollard', 'waterproof outdoor lights', 'driveway lights', 'landscape lights for villa'"
