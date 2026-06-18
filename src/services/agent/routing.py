@@ -178,9 +178,9 @@ def get_intent_config(
     llm=None,
     explicit_intent: Optional[str] = None,
     history_context: str = ""
-) -> Tuple[str, list]:
+) -> Tuple[str, list, str]:
     """
-    Returns (system_prompt, filtered_tools) for the given query.
+    Returns (system_prompt, filtered_tools, intent) for the given query.
 
     Args:
         query: The user's message text.
@@ -203,4 +203,4 @@ def get_intent_config(
         filtered = all_tools
 
     logger.info(f"[Router] intent={intent} | tools={[t.name for t in filtered]}")
-    return prompt, filtered
+    return prompt, filtered, intent

@@ -203,11 +203,14 @@ def search_products_db(
     sort_by: Optional[str] = None,
     limit: int = 100
 ):
-    """
-    Search and filter products from the Neo4j graph database.
-    Uses Category, UseCase, and Feature graph nodes for precise filtering.
-    sort_by values: price_asc, price_desc, rating_desc, rating_asc, reviews_desc
-    """
+    from src.services.agent.utils import track_time
+    tool_logger = logging.getLogger("Tool.SearchProducts")
+    with track_time("Tool: SearchProductsDatabase", custom_logger=tool_logger):
+        """
+        Search and filter products from the Neo4j graph database.
+        Uses Category, UseCase, and Feature graph nodes for precise filtering.
+        sort_by values: price_asc, price_desc, rating_desc, rating_asc, reviews_desc
+        """
     try:
         params = {"limit": limit}
 
@@ -441,12 +444,30 @@ def get_categories_db(*args, **kwargs):
 
 
 def query_policies(query: str):
+    from langchain_neo4j import Neo4jVector
+    import os
+    
+    if AgentConfig.policy_vector_store is None:
+        NEO4J_URI = os.getenv("NEO4J_URI", "").replace("neo4j+s://", "neo4j+ssc://")
+        AgentConfig.policy_vector_store = Neo4jVector.from_existing_index(
+            embedding=AgentConfig.embeddings, url=NEO4J_URI, 
+            username=os.getenv("NEO4J_USERNAME"), password=os.getenv("NEO4J_PASSWORD"),
+            index_name="policy_vector", text_node_property="text"
+        )
+        
     from src.services.agent.context import tenant_context
     tenant_id = tenant_context.get()
     filter_dict = {"tenant": tenant_id} if tenant_id else None
     
     results = AgentConfig.policy_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
     if not results:
+        if AgentConfig.general_vector_store is None:
+            NEO4J_URI = os.getenv("NEO4J_URI", "").replace("neo4j+s://", "neo4j+ssc://")
+            AgentConfig.general_vector_store = Neo4jVector.from_existing_index(
+                embedding=AgentConfig.embeddings, url=NEO4J_URI, 
+                username=os.getenv("NEO4J_USERNAME"), password=os.getenv("NEO4J_PASSWORD"),
+                index_name="inventaa_faq_vector", text_node_property="text"
+            )
         results = AgentConfig.general_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
     if not results:
         return "No relevant policy found."
@@ -455,6 +476,23 @@ def query_policies(query: str):
 
 
 def query_product_faqs(query: str):
+    from langchain_neo4j import Neo4jVector
+    import os
+    
+    if AgentConfig.product_faq_vector_store is None:
+        NEO4J_URI = os.getenv("NEO4J_URI", "").replace("neo4j+s://", "neo4j+ssc://")
+        AgentConfig.product_faq_vector_store = Neo4jVector.from_existing_index(
+            embedding=AgentConfig.embeddings, url=NEO4J_URI, 
+            username=os.getenv("NEO4J_USERNAME"), password=os.getenv("NEO4J_PASSWORD"),
+            index_name="product_faq_vector", text_node_property="question",
+            retrieval_query='''
+            MATCH (node)<-[:HAS_FAQ]-(p:Product)
+            RETURN "FAQ Match: " + node.question + "\\nAnswer: " + node.answer + 
+                   "\\n--> This belongs to Product: " + p.name + " (Price: ₹" + toString(p.price_num) + ")" AS text,
+                   score, {product_url: p.url} AS metadata
+            '''
+        )
+        
     from src.services.agent.context import tenant_context
     tenant_id = tenant_context.get()
     filter_dict = {"tenant": tenant_id} if tenant_id else None

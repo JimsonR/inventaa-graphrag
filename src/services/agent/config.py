@@ -43,31 +43,10 @@ class AgentConfig:
             azure_deployment=os.getenv("TEXT_EMBEDDING_DEPLOYMENT", "text-embedding-ada-002")
         )
 
-        # 3. Connect to Graph
-        cls.graph = Neo4jGraph(url=NEO4J_URI, username=NEO4J_USERNAME, password=NEO4J_PASSWORD)
-        cls.graph.refresh_schema()
-
-        # 4. Connect to Vector Stores
-        cls.general_vector_store = Neo4jVector.from_existing_index(
-            embedding=cls.embeddings, url=NEO4J_URI, username=NEO4J_USERNAME, password=NEO4J_PASSWORD,
-            index_name="inventaa_faq_vector", text_node_property="text"
-        )
-
-        cls.policy_vector_store = Neo4jVector.from_existing_index(
-            embedding=cls.embeddings, url=NEO4J_URI, username=NEO4J_USERNAME, password=NEO4J_PASSWORD,
-            index_name="policy_vector", text_node_property="text"
-        )
-
-        cls.product_faq_vector_store = Neo4jVector.from_existing_index(
-            embedding=cls.embeddings, url=NEO4J_URI, username=NEO4J_USERNAME, password=NEO4J_PASSWORD,
-            index_name="product_faq_vector", text_node_property="question",
-            retrieval_query='''
-            MATCH (node)<-[:HAS_FAQ]-(p:Product)
-            RETURN "FAQ Match: " + node.question + "\\nAnswer: " + node.answer + 
-                   "\\n--> This belongs to Product: " + p.name + " (Price: ₹" + toString(p.price_num) + ")" AS text,
-                   score, {product_url: p.url} AS metadata
-            '''
-        )
+        # 3. Connect to Graph (disable schema refresh for extreme cold start boost)
+        cls.graph = Neo4jGraph(url=NEO4J_URI, username=NEO4J_USERNAME, password=NEO4J_PASSWORD, refresh_schema=False)
+        
+        # 4. We defer vector store initialization to tools.py to prevent blocking startup
 
         cls._initialized = True
         logger.info("AgentConfig initialized.")

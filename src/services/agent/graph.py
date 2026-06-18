@@ -29,47 +29,57 @@ def build_graph(system_prompt: str, tools: list):
     tool_node = ToolNode(tools)
     llm_with_tools = AgentConfig.llm.bind_tools(tools)
 
+    agent_logger = logging.getLogger("Node.Agent")
+    
     def agent_node(state: AgentState):
-        logger.info(f"[Agent Node] Invoking LLM with {len(state['messages'])} messages. Iteration: {state.get('iterations', 0)}")
-        response = llm_with_tools.invoke(state["messages"])
+        from src.services.agent.utils import track_time
+        with track_time("Node: Agent", custom_logger=agent_logger):
+            agent_logger.info(f"Invoking LLM with {len(state['messages'])} messages. Iteration: {state.get('iterations', 0)}")
+            response = llm_with_tools.invoke(state["messages"])
 
         # Guard: LangGraph crashes if the LLM returns neither text nor tool calls
         if not response.tool_calls and not response.content:
-            logger.warning("[Agent Node] LLM returned empty response — injecting fallback message.")
+            agent_logger.warning("LLM returned empty response — injecting fallback message.")
             response.content = "I'm sorry, I'm only able to assist with LED lighting products and related queries from Inventaa."
 
         if response.tool_calls:
-            logger.info(f"[Agent Node] LLM decided to call tools: {[tc['name'] for tc in response.tool_calls]}")
+            agent_logger.info(f"LLM decided to call tools: {[tc['name'] for tc in response.tool_calls]}")
         else:
-            logger.info(f"[Agent Node] LLM provided a direct response: {response.content[:100]}...")
+            agent_logger.info(f"LLM provided a direct response: {response.content[:100]}...")
         return {"messages": [response]}
+
+    capture_logger = logging.getLogger("Node.Capture")
 
     def capture_tool_output(state: AgentState):
         """After tools run, capture the raw SearchProductsDatabase output into state."""
-        logger.info("[Capture Node] Capturing tool outputs...")
+        capture_logger.info("Capturing tool outputs...")
         messages = state["messages"]
         last_product_result = state.get("last_product_search_result")
         for msg in reversed(messages):
             if isinstance(msg, ToolMessage):
-                logger.info(f"[Capture Node] Tool '{msg.name}' returned output (length {len(msg.content)})")
+                capture_logger.info(f"Tool '{msg.name}' returned output (length {len(msg.content)})")
                 if msg.name == "SearchProductsDatabase":
                     last_product_result = msg.content
                 break
         return {"last_product_search_result": last_product_result}
 
+    judge_logger = logging.getLogger("Node.Judge")
+
     def judge_node(state: AgentState):
-        """
-        LLM Judge: evaluates the raw TOOL OUTPUT directly against user query.
-        For product searches, the raw JSON from the tool is judged -- the LLM never synthesizes it.
-        If VALID -> graph ends; caller returns tool output directly.
-        If INVALID -> feedback is added so the agent retries.
-        """
-        messages = state["messages"]
-        iterations = state.get("iterations", 0)
-        logger.info(f"[Judge Node] Evaluating output at iteration {iterations}...")
+        from src.services.agent.utils import track_time
+        with track_time("Node: Judge", custom_logger=judge_logger):
+            """
+            LLM Judge: evaluates the raw TOOL OUTPUT directly against user query.
+            For product searches, the raw JSON from the tool is judged -- the LLM never synthesizes it.
+            If VALID -> graph ends; caller returns tool output directly.
+            If INVALID -> feedback is added so the agent retries.
+            """
+            messages = state["messages"]
+            iterations = state.get("iterations", 0)
+            judge_logger.info(f"Evaluating output at iteration {iterations}...")
 
         if iterations >= 3:
-            logger.warning("[Judge Node] Max iterations reached (3). Forcing completion.")
+            judge_logger.warning("Max iterations reached (3). Forcing completion.")
             return {}
 
         user_query = ""
@@ -79,10 +89,12 @@ def build_graph(system_prompt: str, tools: list):
                 break
 
         product_search_result = state.get("last_product_search_result")
-        last_ai_msg = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
-        last_tool_was_search = bool(product_search_result) and last_ai_msg and not last_ai_msg.tool_calls
+        
+        # If the last message is a ToolMessage from SearchProductsDatabase, we bypassed the Agent synthesis.
+        last_msg = messages[-1]
+        is_direct_product_eval = isinstance(last_msg, ToolMessage) and last_msg.name == "SearchProductsDatabase"
 
-        if last_tool_was_search and product_search_result:
+        if is_direct_product_eval and product_search_result:
             eval_prompt = f"""You are a strict product relevance judge for Inventaa, an Indian outdoor lighting brand.
 The user asked: "{user_query}"
 
@@ -100,6 +112,7 @@ Output ONLY one of:
 - "VALID" if the results match (or if the JSON is empty [])
 - A short feedback sentence if they do not (e.g. "Results are exterior gate lights but user wants indoor lights. Tell user we don't carry indoor lights.")"""
         else:
+            last_ai_msg = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
             last_ai_content = last_ai_msg.content if last_ai_msg else ""
             eval_prompt = f"""You are a lenient QA evaluator for Inventaa.
 The user asked: "{user_query}"
@@ -119,10 +132,10 @@ If in doubt, output "VALID"."""
         eval_content = eval_res.content.strip()
 
         if eval_content == "VALID":
-            logger.info(f"[Judge Node] Decision: VALID. Ending graph.")
+            judge_logger.info(f"Decision: VALID. Ending graph.")
             return {}
         else:
-            logger.info(f"[Judge Node] Decision: INVALID. Sending feedback: {eval_content}")
+            judge_logger.info(f"Decision: INVALID. Sending feedback: {eval_content}")
             feedback_msg = HumanMessage(
                 content=f"Feedback: {eval_content}\nPlease retry and provide a better answer."
             )
@@ -137,6 +150,15 @@ If in doubt, output "VALID"."""
         if last_message.tool_calls:
             return "tools"
         return "judge"
+
+    def after_capture(state: AgentState):
+        """Conditionally route after tools run."""
+        last_msg = state["messages"][-1]
+        # If we just searched for products, bypass the Agent and go straight to the Judge
+        if isinstance(last_msg, ToolMessage) and last_msg.name == "SearchProductsDatabase":
+            return "judge"
+        # For policy/faq tools, go to Agent to synthesize text
+        return "agent"
 
     def should_loop(state: AgentState):
         if state.get("iterations", 0) >= 3:
@@ -155,7 +177,7 @@ If in doubt, output "VALID"."""
     workflow.set_entry_point("agent")
     workflow.add_conditional_edges("agent", should_continue, {"tools": "tools", "judge": "judge"})
     workflow.add_edge("tools", "capture")
-    workflow.add_edge("capture", "agent")
+    workflow.add_conditional_edges("capture", after_capture, {"judge": "judge", "agent": "agent"})
     workflow.add_conditional_edges("judge", should_loop, {"agent": "agent", "end": END})
 
     return workflow.compile()
@@ -177,74 +199,140 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
         _initialized = True
         logger.info("Hybrid RAG Agent Initialized!")
 
-    try:
-        from src.services.agent.context import tenant_context
-        tenant_context.set(tenant_id)
-        
-        logger.info(f"--- STARTING GRAPH EXECUTION FOR QUERY: '{query_text}' ---")
-
-        # Load conversational memory FIRST so the router can use it to disambiguate intent
-        from src.services.agent.memory import get_recent_messages
-        history = get_recent_messages(session_id=session_id, exclude_message_id=message_id, limit=5)
-        
-        # Format history for router
-        history_text = "\n".join([f"{'User' if isinstance(m, HumanMessage) else 'Agent'}: {m.content}" for m in history[-2:]])
-        
-        # Classify query intent → get focused prompt + only the relevant tools
-        all_tools = get_tools()
-        system_prompt, active_tools = get_intent_config(query_text, all_tools, llm=AgentConfig.llm, history_context=history_text)
-        executor = build_graph(system_prompt, active_tools)
-        
-        # Load Long-Term Memory (Mem0)
-        from src.services.agent.mem0_client import fetch_long_term_context, store_long_term_context
-        long_term_context = fetch_long_term_context(query_text, user_id)
-        
-        if long_term_context:
-            logger.info(f"Injected long term context for user {user_id}")
-            system_prompt += long_term_context
-        
-        messages = [SystemMessage(content=system_prompt)] + history + [HumanMessage(content=query_text)]
-
-        final_state = executor.invoke({
-            "messages": messages,
-            "iterations": 0,
-            "last_product_search_result": None,
-        })
-
-        # If there was a validated product search result, return it directly (no LLM synthesis)
-        product_result = final_state.get("last_product_search_result")
-        if product_result:
-            try:
-                parsed_json = json.loads(product_result)
-                logger.info(f"--- GRAPH FINISHED: Returning raw JSON array from tool ({len(parsed_json)} items) ---")
-                return parsed_json
-            except (json.JSONDecodeError, TypeError):
-                logger.warning("--- GRAPH FINISHED: Failed to parse tool JSON, falling back to conversational ---")
-
-        # Otherwise return the last AIMessage content (policy / FAQ / detail answer)
-        last_ai = next(
-            (m for m in reversed(final_state["messages"]) if isinstance(m, AIMessage) and not m.tool_calls),
-            None
-        )
-        output = last_ai.content if last_ai else "I'm sorry, I encountered an error. Please try again."
-
-        # Helper to trigger async memory ingestion without blocking the response
-        def run_background_storage(response_text):
-            import threading
-            threading.Thread(target=store_long_term_context, args=(query_text, response_text, user_id), daemon=True).start()
-
+    from src.services.agent.utils import track_time
+    request_logger = logging.getLogger("Task.Request")
+    with track_time("Total Request Execution", custom_logger=request_logger):
         try:
-            parsed = json.loads(output)
-            logger.info("--- GRAPH FINISHED: Returning JSON from agent ---")
-            # We don't necessarily store raw JSON product lists into Mem0, 
-            # but you can if you want. Let's just return.
-            return parsed
-        except (json.JSONDecodeError, TypeError):
-            logger.info(f"--- GRAPH FINISHED: Returning text from agent ({len(output)} chars) ---")
-            # Store the conversational answer in Mem0
-            run_background_storage(output)
-            return output
+            from src.services.agent.context import tenant_context
+            tenant_context.set(tenant_id)
+            
+            logger.info(f"--- STARTING GRAPH EXECUTION FOR QUERY: '{query_text}' ---")
 
-    except Exception as e:
-        logger.error(f"Error invoking agent: {e}", exc_info=True)
-        return "I'm sorry, I encountered an error while processing your request. Please try again later."
+            # ─── Parallel Pre-computation ──────────────────────────────────────────
+            # We run History+Routing, Embeddings, and Mem0 fetch simultaneously
+            # to crush the pre-computation latency.
+            from src.services.agent.memory import get_recent_messages
+            from src.services.agent.mem0_client import fetch_long_term_context, store_long_term_context
+            from src.services.agent.response_cache import cache_lookup, cache_store
+            import concurrent.futures
+            import os
+            import threading
+
+            all_tools = get_tools()
+            task_logger = logging.getLogger("Task.Parallel")
+
+            def task_history_and_intent():
+                from src.services.agent.utils import track_time
+                with track_time("Task: History & Intent", custom_logger=task_logger):
+                    history = get_recent_messages(session_id=session_id, exclude_message_id=message_id, limit=5)
+                    history_text = "\n".join([f"{'User' if isinstance(m, HumanMessage) else 'Agent'}: {m.content}" for m in history[-2:]])
+                    sys_prompt, active_tools, intent = get_intent_config(query_text, all_tools, llm=AgentConfig.llm, history_context=history_text)
+                    return history, sys_prompt, active_tools, intent
+
+            def task_embedding():
+                from src.services.agent.utils import track_time
+                with track_time("Task: Embedding Generation", custom_logger=task_logger):
+                    return AgentConfig.embeddings.embed_query(query_text)
+
+            def task_mem0():
+                from src.services.agent.utils import track_time
+                with track_time("Task: Mem0 Retrieval", custom_logger=task_logger):
+                    return fetch_long_term_context(query_text, user_id)
+
+            from src.services.agent.utils import track_time
+            with track_time("Total Parallel Pre-computation", custom_logger=task_logger):
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                    future_intent = executor.submit(task_history_and_intent)
+                    future_embedding = executor.submit(task_embedding)
+                    future_mem0 = executor.submit(task_mem0)
+
+                    history, system_prompt, active_tools, intent = future_intent.result()
+                    query_embedding = future_embedding.result()
+                    long_term_context = future_mem0.result()
+
+            # ─── Semantic Cache: Lookup ──────────────────────────────────────────
+            cache_threshold = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.95"))
+            cache_ttl = int(os.getenv("CACHE_TTL_SECONDS", "86400"))  # 24 hours
+            cache_skip = ["detail", "search"]  # product and detail lookups should always be fresh
+            
+            cached = cache_lookup(
+                embedding=query_embedding,
+                tenant_id=tenant_id,
+                intent=intent,
+                threshold=cache_threshold,
+                skip_intents=cache_skip,
+            )
+            if cached:
+                logger.info(f"--- CACHE HIT: Returning cached response (original: {cached.get('query_text', '?')!r}) ---")
+                # Still store in mem0 asynchronously
+                if cached["response_type"] == "text":
+                    threading.Thread(target=store_long_term_context, args=(query_text, cached["response"], user_id), daemon=True).start()
+                return cached["response"]
+            # ─── End Cache Lookup ────────────────────────────────────────────────
+            
+            executor_graph = build_graph(system_prompt, active_tools)
+            
+            if long_term_context:
+                logger.info(f"Injected long term context for user {user_id}")
+                system_prompt += long_term_context
+            
+            messages = [SystemMessage(content=system_prompt)] + history + [HumanMessage(content=query_text)]
+
+            from src.services.agent.utils import track_time
+            with track_time("Total Graph Execution"):
+                final_state = executor_graph.invoke({
+                    "messages": messages,
+                    "iterations": 0,
+                    "last_product_search_result": None,
+                })
+
+            # If there was a validated product search result, return it directly (no LLM synthesis)
+            product_result = final_state.get("last_product_search_result")
+            if product_result:
+                try:
+                    parsed_json = json.loads(product_result)
+                    logger.info(f"--- GRAPH FINISHED: Returning raw JSON array from tool ({len(parsed_json)} items) ---")
+                    # Cache the product result
+                    cache_store(
+                        embedding=query_embedding, query_text=query_text,
+                        response=parsed_json, tenant_id=tenant_id,
+                        intent=intent, response_type="products",
+                        ttl=cache_ttl, skip_intents=cache_skip,
+                    )
+                    return parsed_json
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("--- GRAPH FINISHED: Failed to parse tool JSON, falling back to conversational ---")
+
+            # Otherwise return the last AIMessage content (policy / FAQ / detail answer)
+            last_ai = next(
+                (m for m in reversed(final_state["messages"]) if isinstance(m, AIMessage) and not m.tool_calls),
+                None
+            )
+            output = last_ai.content if last_ai else "I'm sorry, I encountered an error. Please try again."
+
+            # Helper to trigger async memory ingestion without blocking the response
+            def run_background_storage(response_text):
+                import threading
+                threading.Thread(target=store_long_term_context, args=(query_text, response_text, user_id), daemon=True).start()
+
+            try:
+                parsed = json.loads(output)
+                logger.info("--- GRAPH FINISHED: Returning JSON from agent ---")
+                return parsed
+            except (json.JSONDecodeError, TypeError):
+                logger.info(f"--- GRAPH FINISHED: Returning text from agent ({len(output)} chars) ---")
+                # Cache the text response
+                cache_store(
+                    embedding=query_embedding, query_text=query_text,
+                    response=output, tenant_id=tenant_id,
+                    intent=intent, response_type="text",
+                    ttl=cache_ttl, skip_intents=cache_skip,
+                )
+                # Store the conversational answer in Mem0
+                run_background_storage(output)
+                return output
+
+        except Exception as e:
+            logger.error(f"Error invoking agent: {e}", exc_info=True)
+            return "I'm sorry, I encountered an error while processing your request. Please try again later."
+
