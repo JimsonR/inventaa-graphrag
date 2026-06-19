@@ -61,8 +61,19 @@ def search_products_db(
         logger.info(f"SearchProducts | query={query!r} | category={category!r} "
                     f"| use_case={use_case!r} | feature={feature!r}")
 
-        # Build Cypher: start from Collection for maximum precision when category is known
+        # Meta-collection explicit handling
         final_category = category or collection
+        meta_mapping = {
+            "indoor": "indoor",
+            "outdoor": "outdoor",
+            "solar": "solar-powered"
+        }
+        
+        if final_category and final_category.lower() in meta_mapping:
+            feature = feature or meta_mapping[final_category.lower()]
+            final_category = None
+
+        # Build Cypher: start from Collection for maximum precision when category is known
         if final_category:
             cypher_query = """
 MATCH (col:Collection {name: $category})<-[:BELONGS_TO_COLLECTION]-(p:Product)
@@ -86,7 +97,7 @@ MATCH (col:Collection {name: $category})<-[:BELONGS_TO_COLLECTION]-(p:Product)
 
         # Feature filter
         if feature:
-            cypher_query += f"MATCH (p)-[:HAS_FEATURE]->(f:Feature {{name: $feature}})\n"
+            cypher_query += "MATCH (p)-[:HAS_FEATURE]->(f:Feature {name: $feature})\n"
             params["feature"] = feature
 
         # Spec filter
@@ -124,17 +135,17 @@ MATCH (col:Collection {name: $category})<-[:BELONGS_TO_COLLECTION]-(p:Product)
         sort_clause = sort_map.get((sort_by or "").lower(), "ORDER BY p.rating_score DESC")
 
         cypher_query += f"""
-OPTIONAL MATCH (p)-[:HAS_WARRANTY]->(w:Warranty)
-OPTIONAL MATCH (p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'replacement' OR toLower(pol.title) CONTAINS 'exchange'
-OPTIONAL MATCH (p)-[:BELONGS_TO_COLLECTION]->(col2:Collection)
-RETURN DISTINCT p.sku AS sku, p.name AS name, p.price_num AS price_num,
+WITH p
+{sort_clause}
+LIMIT $limit
+RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
        p.regular_price AS regular_price, p.discount_percentage AS discount_percentage,
        p.image_url AS image_url, p.url AS url, p.rating_score AS rating,
        p.review_count AS review_count, p.tenant AS tenant, p.feature_descriptions AS feature_descriptions,
-       p.installation_url AS installation_url, w.description AS warranty, pol.content AS replacement_exchange_policy,
-       collect(DISTINCT col2.name) AS collections
-{sort_clause}
-LIMIT $limit
+       p.installation_url AS installation_url,
+       [(p)-[:HAS_WARRANTY]->(w:Warranty) | w.description][0] AS warranty,
+       [(p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'replacement' OR toLower(pol.title) CONTAINS 'exchange' | pol.content][0] AS replacement_exchange_policy,
+       [(p)-[:BELONGS_TO_COLLECTION]->(col2:Collection) | col2.name] AS collections
 """
 
         logger.info(f"SearchProductsDatabase Cypher:\n{cypher_query.strip()}\nParams: {params}")
@@ -142,6 +153,20 @@ LIMIT $limit
 
         if not res:
             return "[]"
+
+        # Graph-driven routing logic
+        all_collections = set()
+        for row in res:
+            cols = row.get("collections") or []
+            all_collections.update(cols)
+        
+        # Intercept if the query matches products across multiple distinct collections and is large
+        if len(all_collections) > 2 and len(res) >= 10 and not final_category:
+            return json.dumps({
+                "status": "needs_clarification",
+                "message": "The query matched many products across multiple different collections. Ask the user to narrow down their choice from the available collections.",
+                "available_collections": sorted(list(all_collections))
+            }, indent=2, ensure_ascii=False)
 
         return json.dumps(res, indent=2, ensure_ascii=False)
 
@@ -179,21 +204,16 @@ def get_product_details_db(product_name: str):
         WHERE p.tenant = $tenant_id OR p.tenant IS NULL
         WITH p, score
         ORDER BY score DESC LIMIT 1
-        OPTIONAL MATCH (p)-[:HAS_WARRANTY]->(w:Warranty)
-        OPTIONAL MATCH (p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'replacement' OR toLower(pol.title) CONTAINS 'exchange'
-        OPTIONAL MATCH (p)-[:HAS_SPEC]->(s:Spec)
-        OPTIONAL MATCH (p)-[:AVAILABLE_IN_WATTAGE]->(wo:WattageOption)
-        OPTIONAL MATCH (p)-[:AVAILABLE_IN_COLOR]->(co:ColorOption)
-        OPTIONAL MATCH (p)-[:BELONGS_TO_COLLECTION]->(col:Collection)
         RETURN p.name AS name, p.price_num AS price,
                p.feature_descriptions AS feature_descriptions,
                p.installation_url AS installation_url,
-               pol.content AS replacement_exchange_policy,
-               w.description AS warranty_info, w.duration_years AS warranty_duration,
-               collect(DISTINCT s.key + ': ' + s.value) AS specs,
-               collect(DISTINCT wo.name) AS wattages,
-               collect(DISTINCT co.name) AS colors,
-               collect(DISTINCT col.name) AS collections
+               [(p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'replacement' OR toLower(pol.title) CONTAINS 'exchange' | pol.content][0] AS replacement_exchange_policy,
+               [(p)-[:HAS_WARRANTY]->(w:Warranty) | w.description][0] AS warranty_info,
+               [(p)-[:HAS_WARRANTY]->(w:Warranty) | w.duration_years][0] AS warranty_duration,
+               [(p)-[:HAS_SPEC]->(s:Spec) | s.key + ': ' + s.value] AS specs,
+               [(p)-[:AVAILABLE_IN_WATTAGE]->(wo:WattageOption) | wo.name] AS wattages,
+               [(p)-[:AVAILABLE_IN_COLOR]->(co:ColorOption) | co.name] AS colors,
+               [(p)-[:BELONGS_TO_COLLECTION]->(col:Collection) | col.name] AS collections
         """
         from src.services.agent.context import tenant_context
         params = {"lucene_query": lucene_query, "tenant_id": tenant_context.get()}
@@ -252,45 +272,6 @@ def get_product_details_db(product_name: str):
         return f"Error getting product details: {e}"
 
 
-
-def get_categories_db(*args, **kwargs):
-    """
-    Returns all available product categories and collections currently in the database.
-    """
-    try:
-        from src.services.agent.context import tenant_context
-        tenant_id = tenant_context.get()
-        
-        # Get Categories
-        cat_cypher = "MATCH (c:Category)-[:HAS_PRODUCT]->(p:Product)\n"
-        params = {}
-        if tenant_id:
-            cat_cypher += "WHERE p.tenant = $tenant_id\n"
-            params["tenant_id"] = tenant_id
-            
-        cat_cypher += "RETURN DISTINCT c.name AS category ORDER BY category"
-        cat_res = AgentConfig.graph.query(cat_cypher, params=params)
-        cats = [r["category"] for r in cat_res] if cat_res else []
-        
-        # Get Collections
-        col_cypher = "MATCH (c:Collection)<-[:BELONGS_TO_COLLECTION]-(p:Product)\n"
-        if tenant_id:
-            col_cypher += "WHERE p.tenant = $tenant_id\n"
-        col_cypher += "RETURN DISTINCT c.name AS collection ORDER BY collection"
-        col_res = AgentConfig.graph.query(col_cypher, params=params)
-        cols = [r["collection"] for r in col_res] if col_res else []
-        
-        output = []
-        if cols:
-            output.append("Available Collections: " + ", ".join(cols))
-            
-        if not output:
-            return "No categories or collections found in the database."
-            
-        return "\n".join(output)
-    except Exception as e:
-        logger.error(f"Error in GetCategoriesDatabase: {e}", exc_info=True)
-        return f"Error getting categories: {e}"
 
 
 def query_policies(query: str):
@@ -464,17 +445,7 @@ def get_tools():
             ),
             return_direct=False
         ),
-        Tool(
-            name="GetCategoriesDatabase",
-            func=get_categories_db,
-            description=(
-                "Use this to fetch the list of available product categories from the database. "
-                "Call this ONLY when the user's request is extremely broad (e.g. 'show me products', 'show indoor lights', 'show outdoor lights') "
-                "to find out what options exist before asking them a clarifying question. "
-                "Do NOT call this if the user asks for a specific type (e.g. 'solar lights', 'wall lights', 'gate lights', 'bollard lights'). "
-                "Do NOT call this if you already know their preferred category from long-term memory."
-            )
-        ),
+
         StructuredTool.from_function(
             name="ProductDetailsDatabase",
             func=get_product_details_db,

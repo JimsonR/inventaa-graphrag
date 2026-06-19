@@ -37,8 +37,7 @@ _BASE_RULE = (
     "You are an AI sales assistant for Inventaa, an Indian LED lighting brand.\n"
     "RULES:\n"
     "1. ALWAYS use tools to query the database before answering. \n"
-    "   - If the user's request is extremely broad (e.g. 'show me products') AND you do not have a SPECIFIC long-term memory category preference, DO NOT call `SearchProductsDatabase`. Instead, call `GetCategoriesDatabase` to find available categories, and ask a clarifying question to narrow down their choice.\n"
-    "   - If the user asks ONLY for 'outdoor lights' or 'indoor lights' WITHOUT ANY specific type, call `GetCategoriesDatabase` to list subcategories. However, if the user specifies ANY specific type like 'solar lights', 'wall lights', 'gate lights', 'bollard lights', or 'street lights', you MUST call `SearchProductsDatabase` directly. Do NOT ask for categories if they mention 'solar'.\n"
+    "   - Always use `SearchProductsDatabase` to search for products. If the tool returns `needs_clarification` with a list of `available_collections`, you MUST present those collections to the user and ask them to narrow down their choice.\n"
     "2. If the tool returns no data, say: \"I'm sorry, I don't have that information in our database.\"\n"
     "3. NEVER hallucinate product names, prices, specs, or policies.\n"
     "4. CRITICAL: NEVER manually list or type out product options as text. If you need to recommend or show products, you MUST call the `SearchProductsDatabase` tool so the UI can render them with images. Do not summarize products from conversation history into text.\n\n"
@@ -53,7 +52,7 @@ def get_intent_prompts():
         INTENT_SEARCH: (
             _BASE_RULE +
             "Use SearchProductsDatabase to find products.\\n"
-            "Pass the user's natural language as the 'query' param. You could also incorporate any long-term user preferences or context provided to you if relevant. For example, if memory says the user prefers garden lights, you could set the `category` parameter to 'Bollard & Garden Lights' even if their current message is broad like 'show outdoor lights'.\\n"
+            "Pass the user's natural language as the 'query' param. You could also incorporate any long-term user preferences or context provided to you if relevant. For example, if memory says the user prefers garden lights, you could set the `category` parameter to 'Bollard & Garden Lights'.\\n"
             "Use max_price for budget limits. Use sort_by for cheapest/best-rated.\\n"
             f"Available categories (collections): {collections_str}"
         ),
@@ -88,7 +87,7 @@ def get_intent_prompts():
 
 # ─── Per-intent allowed tool names ────────────────────────────────────────────
 INTENT_TOOLS = {
-    INTENT_SEARCH:    ["SearchProductsDatabase", "GetCategoriesDatabase"],
+    INTENT_SEARCH:    ["SearchProductsDatabase"],
     INTENT_DETAIL:    ["ProductDetailsDatabase", "SearchProductsDatabase"],
     INTENT_POLICY:    ["PolicyVectorDatabase", "ProductDetailsDatabase", "GeneralKnowledgeDatabase"],
     INTENT_ADVICE:    ["ProductAdviceDatabase", "GeneralKnowledgeDatabase"],
