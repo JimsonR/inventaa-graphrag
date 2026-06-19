@@ -36,7 +36,7 @@ EXTERNAL_INTENT_MAP = {}
 _BASE_RULE = (
     "You are an AI sales assistant for Inventaa, an Indian LED lighting brand.\n"
     "RULES:\n"
-    "1. ALWAYS use tools to query the database before answering. If the user's request is extremely broad (e.g. 'show me products'), DO NOT call `SearchProductsDatabase`. Instead, call `GetCategoriesDatabase` to check what categories exist in the graph, and use that data to ask a clarifying question to narrow down their choice.\n"
+    "1. ALWAYS use tools to query the database before answering. If the user's request is broad (e.g. 'show me products', 'outdoor lights', 'indoor lights') AND you do not have long-term memory specifying their preferred category, DO NOT call `SearchProductsDatabase`. Instead, call `GetCategoriesDatabase` to find available categories, and ask a clarifying question to narrow down their choice. If you DO have long-term memory (e.g. user prefers garden lights), you should use `SearchProductsDatabase` and explicitly set that `category` to save them time.\n"
     "2. If the tool returns no data, say: \"I'm sorry, I don't have that information in our database.\"\n"
     "3. NEVER hallucinate product names, prices, specs, or policies.\n"
     "4. CRITICAL: NEVER manually list or type out product options as text. If you need to recommend or show products, you MUST call the `SearchProductsDatabase` tool so the UI can render them with images. Do not summarize products from conversation history into text.\n\n"
@@ -62,10 +62,10 @@ INTENT_PROMPTS = {
     INTENT_POLICY: (
         _BASE_RULE +
         "If the user is asking about the warranty for a specific product from the conversation, use ProductDetailsDatabase.\n"
-        "Use GeneralKnowledgeDatabase to search for discounts, offers, and shipping/replacement policies.\n"
+        "Use GeneralKnowledgeDatabase to search for general coupon codes and shipping/replacement policies.\n"
         "Otherwise, use PolicyVectorDatabase to answer questions about general company policies.\n"
         "Topics: shipping, delivery time, return/replacement, warranty claims, "
-        "bulk pricing, dealer rates, damaged/wrong items, discounts, offers."
+        "bulk pricing, dealer rates, damaged/wrong items, general coupon codes."
     ),
     INTENT_ADVICE: (
         _BASE_RULE +
@@ -90,30 +90,7 @@ INTENT_TOOLS = {
     INTENT_KNOWLEDGE: ["GeneralKnowledgeDatabase", "ProductAdviceDatabase"],
 }
 
-# ─── Fast-Path Overrides ──────────────────────────────────────────────────────
-# Hard SEARCH overrides: query clearly asks to find/list products
-# These take precedence over LLM classification to save latency.
-_SEARCH_OVERRIDES = frozenset([
-    "show me", "show ", "find me", "find products",
-    "list products", "list lights", "get me",
-    "display products", "browse",
-    "lights for ", "light for ", "lamps for ",
-    "lights under ", "products under ",
-    "under rs", "under ₹", "under inr", "under rupees", "within rs",
-    "cheapest", "lowest rated", "highest rated", "best rated",
-    "lowest price", "best price", "affordable",
-    "ip65 rated", "ip66 rated", "ip67 rated",
-    "recommend lighting", "suggest lighting",
-    "what solar lights", "what gate lights", "what outdoor lights",
-    "which lights should", "which light should",
-])
 
-# Hard POLICY overrides: queries clearly asking for offers, deals, or policies
-_POLICY_OVERRIDES = frozenset([
-    "offer", "offers", "discount", "discounts", "promotion", "promotions",
-    "coupon", "coupons", "deal", "deals", "warranty", "return policy",
-    "shipping time", "delivery time"
-])
 
 # ─── Agentic Intent Classifier ────────────────────────────────────────────────
 
@@ -127,9 +104,9 @@ class IntentClassification(BaseModel):
 _ROUTER_SYSTEM_PROMPT = """You are an intent classification router for an LED lighting company.
 Classify the user's query into exactly ONE of the following intents:
 
-- "search" : Browsing, finding, recommending, or filtering products by budget/rating/type.
+- "search" : Browsing, finding, recommending, or filtering products by budget/rating/type, OR asking for discounts/offers on products (e.g. "offers on solar lights").
 - "detail" : Asking for specific specs (wattage, dimensions, warranty, material) of a product, OR asking a follow-up question (like "warranty", "price") about a product recently mentioned in the conversation context.
-- "policy" : General questions about shipping, delivery, returns, general warranty claims procedure, bulk pricing/dealer rates, DISCOUNTS, OFFERS, or PROMOTIONS.
+- "policy" : General questions about shipping, delivery, returns, general warranty claims procedure, bulk pricing/dealer rates, or general coupon codes (NOT tied to finding products).
 - "advice" : Questions about installation, durability (waterproof, coastal, weather), or maintenance (NO named product).
 - "knowledge" : Educational concepts (what is IP rating/CRI/lumens), comparisons (LED vs solar, warm vs cool), or general buying guides.
 
@@ -138,19 +115,8 @@ If the query does not perfectly match one, select the closest fit. If completely
 
 def classify_intent(query: str, llm=None, history_context: str = "") -> str:
     """
-    Classifies intent using a fast LLM call, with deterministic fast-paths for obvious searches.
+    Classifies intent using a fast LLM call.
     """
-    q = query.lower()
-
-    # 1. Fast-Path: Explicit search queries
-    if any(kw in q for kw in _SEARCH_OVERRIDES):
-        logger.info(f"[Router] intent=search (fast-path override)  query={query!r}")
-        return INTENT_SEARCH
-
-    # 1.5. Fast-Path: Explicit policy/offers queries
-    if any(kw in q for kw in _POLICY_OVERRIDES):
-        logger.info(f"[Router] intent=policy (fast-path override)  query={query!r}")
-        return INTENT_POLICY
 
     # 2. Agentic Classification
     if llm is None:
