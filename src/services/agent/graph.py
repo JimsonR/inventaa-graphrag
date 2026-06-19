@@ -277,6 +277,12 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                 system_prompt += long_term_context
             
             messages = [SystemMessage(content=system_prompt)] + history + [HumanMessage(content=query_text)]
+            
+            logger.info("--- PROMPT INJECTED TO AGENT LLM ---")
+            for idx, m in enumerate(messages):
+                role = "SYSTEM" if isinstance(m, SystemMessage) else "USER" if isinstance(m, HumanMessage) else "AGENT"
+                logger.info(f"[{idx}] {role}:\n{m.content}\n")
+            logger.info("------------------------------------")
 
             from src.services.agent.utils import track_time
             with track_time("Total Graph Execution"):

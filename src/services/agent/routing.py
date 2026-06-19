@@ -134,6 +134,13 @@ def classify_intent(query: str, llm=None, history_context: str = "") -> str:
             SystemMessage(content=system_content),
             HumanMessage(content=query)
         ]
+        
+        logger.info("--- PROMPT INJECTED TO ROUTER LLM ---")
+        for idx, m in enumerate(messages):
+            role = "SYSTEM" if isinstance(m, SystemMessage) else "USER" if isinstance(m, HumanMessage) else "AGENT"
+            logger.info(f"[{idx}] {role}:\n{m.content}\n")
+        logger.info("---------------------------------------")
+
         result = router.invoke(messages)
         intent = result.intent.lower()
         
