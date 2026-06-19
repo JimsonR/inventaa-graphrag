@@ -46,7 +46,7 @@ _BASE_RULE = (
 
 def get_intent_prompts():
     from src.services.agent.config import AgentConfig
-    collections_str = " | ".join(AgentConfig.collections) if AgentConfig.collections else "3 in 1 gate light | Divine Light For Home Entrance | Indoor Commercial Lights | Indoor Domestic Lights | LED Outdoor Wall Light | Outdoor Commercial Lights | Outdoor Garden Bollard Light | Outdoor LED Gate Lamp Lights | Outdoor LED Solar Powered Garden Or Street Light Online"
+    collections_str = " | ".join(AgentConfig.collections) if AgentConfig.collections else "3 in 1 gate light | Divine Light For Home Entrance | Indoor Commercial Lights | Indoor Domestic Lights | LED Outdoor Wall Light | Outdoor Commercial Lights | Outdoor Garden Bollard Light | Outdoor LED Gate Lamp Lights | Solar Lights"
     
     return {
         INTENT_SEARCH: (
@@ -67,9 +67,9 @@ def get_intent_prompts():
             _BASE_RULE +
             "If the user is asking about the warranty for a specific product from the conversation, use ProductDetailsDatabase.\\n"
             "Use GeneralKnowledgeDatabase to search for general coupon codes and shipping/replacement policies.\\n"
-            "Otherwise, use PolicyVectorDatabase to answer questions about general company policies.\\n"
+            "Otherwise, use PolicyVectorDatabase to answer questions about general company policies, offers, and discounts.\\n"
             "Topics: shipping, delivery time, return/replacement, warranty claims, "
-            "bulk pricing, dealer rates, damaged/wrong items, general coupon codes."
+            "bulk pricing, dealer rates, damaged/wrong items, general coupon codes, discounts, offers."
         ),
         INTENT_ADVICE: (
             _BASE_RULE +
@@ -108,9 +108,9 @@ class IntentClassification(BaseModel):
 _ROUTER_SYSTEM_PROMPT = """You are an intent classification router for an LED lighting company.
 Classify the user's query into exactly ONE of the following intents:
 
-- "search" : Browsing, finding, recommending, or filtering products by budget/rating/type, OR asking for discounts/offers on products (e.g. "offers on solar lights").
+- "search" : Browsing, finding, recommending, or filtering products by budget/rating/type.
 - "detail" : Asking for specific specs (wattage, dimensions, warranty, material) of a product, OR asking a follow-up question (like "warranty", "price") about a product recently mentioned in the conversation context.
-- "policy" : General questions about shipping, delivery, returns, general warranty claims procedure, bulk pricing/dealer rates, or general coupon codes (NOT tied to finding products).
+- "policy" : Questions about discounts, offers, deals, coupon codes (e.g. "offers on solar lights"), shipping, delivery, returns, general warranty claims procedure, or bulk pricing/dealer rates.
 - "advice" : Questions about installation, durability (waterproof, coastal, weather), or maintenance (NO named product).
 - "knowledge" : Educational concepts (what is IP rating/CRI/lumens), comparisons (LED vs solar, warm vs cool), or general buying guides.
 

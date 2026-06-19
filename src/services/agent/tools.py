@@ -61,36 +61,47 @@ def search_products_db(
         logger.info(f"SearchProducts | query={query!r} | category={category!r} "
                     f"| use_case={use_case!r} | feature={feature!r}")
 
-        cypher_query = "MATCH (p:Product)\n"
+        cypher_query = ""
         where_clauses = []
         
         from src.services.agent.context import tenant_context
         tenant_id = tenant_context.get()
         if tenant_id:
-            where_clauses.append("p.tenant = $tenant_id")
+            where_clauses.append("(p.tenant = $tenant_id OR p.tenant IS NULL)")
             params["tenant_id"] = tenant_id
 
-        # ─── 1. Tokenize Search Terms ───────────────────────────────────────────
-        # We extract unique tokens from all text-based fields provided by the LLM
-        search_terms = []
-        for text in filter(None, [query, category, collection, feature, use_case]):
-            _STOP = {"led", "light", "lights", "lamp", "lamps", "the", "a", "an", "and", "or", "for", "of", "in", "with", "by", "from", "lighting"}
-            raw = [t.strip(".,?!-–—/|") for t in text.split()]
-            search_terms.extend([t.lower() for t in raw if t and len(t) > 2 and t.lower() not in _STOP])
+        # ─── 1. Full-Text Search on Product Name for raw query ──────────────────
+        if query and query.strip():
+            _STOP = {
+                "led", "light", "lights", "lamp", "lamps", "the", "a", "an", "and", "or", "for", "of", "in", "with", 
+                "by", "from", "lighting", "offers", "offer", "discount", "discounts", "sale", "deal", "deals", 
+                "best", "top", "cheap", "cheapest", "buy", "show", "me", "any", "on"
+            }
+            raw = [t.strip(".,?!-–—/|") for t in query.split()]
+            good_tokens = [t.lower() for t in raw if t and len(t) > 2 and t.lower() not in _STOP]
+            
+            if good_tokens:
+                lucene_query = " AND ".join([t + "~" for t in good_tokens])
+                cypher_query += 'CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score\n'
+                params["lucene_query"] = lucene_query
+            else:
+                cypher_query += "MATCH (p:Product)\n"
+        else:
+            cypher_query += "MATCH (p:Product)\n"
 
-        search_terms = list(set(search_terms))  # unique tokens
-
-        # ─── 2. Build Dynamic Graph Traversal ───────────────────────────────────
-        # For each token, we check if it matches the Product's text, OR any of its connected metadata nodes
-        for i, term in enumerate(search_terms):
-            tok_key = f"stok_{i}"
-            params[tok_key] = term
-            where_clauses.append(f"""
-            (toLower(p.name) CONTAINS ${tok_key} 
-             OR size([(p)-[:BELONGS_TO_COLLECTION]->(c:Collection) WHERE toLower(c.name) CONTAINS ${tok_key} | 1]) > 0
-             OR size([(p)-[:HAS_FEATURE]->(f:Feature) WHERE toLower(f.name) CONTAINS ${tok_key} | 1]) > 0
-             OR size([(p)-[:SUITABLE_FOR]->(u:UseCase) WHERE toLower(u.name) CONTAINS ${tok_key} | 1]) > 0)
-            """.strip())
+        # ─── 2. Structural Graph Matching ───────────────────────────────────────
+        target_col = category or collection
+        if target_col:
+            cypher_query += "MATCH (p)-[:BELONGS_TO_COLLECTION]->(c:Collection {name: $collection})\n"
+            params["collection"] = target_col
+            
+        if feature:
+            cypher_query += "MATCH (p)-[:HAS_FEATURE]->(f:Feature {name: $feature})\n"
+            params["feature"] = feature
+            
+        if use_case:
+            cypher_query += "MATCH (p)-[:SUITABLE_FOR]->(u:UseCase {name: $use_case})\n"
+            params["use_case"] = use_case
 
         # ─── 3. Add Technical Spec filter if provided ───────────────────────────
         if spec:
@@ -118,12 +129,15 @@ def search_products_db(
             "rating_desc": "ORDER BY p.rating_score DESC",
             "rating_asc": "ORDER BY p.rating_score ASC",
             "reviews_desc": "ORDER BY p.review_count DESC",
+            "relevance": "ORDER BY score DESC"
         }
-        sort_clause = sort_map.get((sort_by or "").lower(), "ORDER BY p.rating_score DESC")
+        order_clause = sort_map.get((sort_by or "").lower(), "")
+        if not order_clause:
+            order_clause = "ORDER BY score DESC, p.rating_score DESC" if "lucene_query" in params else "ORDER BY p.rating_score DESC"
 
         cypher_query += f"""
 WITH p
-{sort_clause}
+{order_clause}
 LIMIT $limit
 RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
        p.regular_price AS regular_price, p.discount_percentage AS discount_percentage,
@@ -391,6 +405,9 @@ def query_general_knowledge(query: str):
 
 
 def get_tools():
+    cols_str = "', '".join(AgentConfig.collections) if AgentConfig.collections else "Solar Lights"
+    feats_str = ", ".join(AgentConfig.features) if AgentConfig.features else "solar-powered"
+    
     return [
         StructuredTool.from_function(
             name="SearchProductsDatabase",
@@ -403,15 +420,9 @@ def get_tools():
                 "\n\nParameters:"
                 "\n- query (str): natural language query. Examples: 'indoor ceiling lights', 'solar gate lights', "
                 "'garden bollard', 'waterproof outdoor lights', 'driveway lights', 'landscape lights for villa'"
-                "\n- category (str): explicit collection override, one of: "
-                "'3 in 1 gate light', 'Divine Light For Home Entrance', 'Indoor Commercial Lights', "
-                "'Indoor Domestic Lights', 'LED Outdoor Wall Light', 'Outdoor Commercial Lights', "
-                "'Outdoor Garden Bollard Light', 'Outdoor LED Gate Lamp Lights', "
-                "'Outdoor LED Solar Powered Garden Or Street Light Online'"
-                "\n- collection (str): filter by collection name. Available collections: '3 in 1 gate light', 'Divine Light For Home Entrance', 'Indoor Commercial Lights', 'Indoor Domestic Lights', 'LED Outdoor Wall Light', 'Outdoor Commercial Lights', 'Outdoor Garden Bollard Light', 'Outdoor LED Gate Lamp Lights', 'Outdoor LED Solar Powered Garden Or Street Light Online'"
-                "\n- feature (str): one of: solar-powered, waterproof, IP65-rated, IP66-rated, motion-sensor, "
-                "dimmable, warm-white, cool-white, neutral-white, 3-in-1-colour, aluminium-body, "
-                "polycarbonate-body, surface-mount, wall-mount, rustproof, UV-protected, energy-efficient"
+                f"\n- category (str): explicit collection override, one of: '{cols_str}'"
+                f"\n- collection (str): filter by collection name. Available collections: '{cols_str}'"
+                f"\n- feature (str): one of: {feats_str}"
                 "\n- spec (str): technical spec filter. Examples: 'IP65', '12W', '18W', 'aluminium', 'beam angle'"
                 "\n- min_price / max_price (int): price range in INR (e.g. max_price=10000 for '₹10,000 budget')"
                 "\n- sort_by (str): rating_desc, rating_asc, price_asc, price_desc, reviews_desc"
