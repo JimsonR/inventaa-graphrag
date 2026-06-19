@@ -146,7 +146,8 @@ RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
        p.installation_url AS installation_url,
        [(p)-[:HAS_WARRANTY]->(w:Warranty) | w.description][0] AS warranty,
        [(p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'replacement' OR toLower(pol.title) CONTAINS 'exchange' | pol.content][0] AS replacement_exchange_policy,
-       [(p)-[:BELONGS_TO_COLLECTION]->(col2:Collection) | col2.name] AS collections
+       [(p)-[:BELONGS_TO_COLLECTION]->(col2:Collection) | col2.name] AS collections,
+       [(p)-[:BELONGS_TO_TENANT]->(t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) | o.text][0] AS global_offers
 """
 
         logger.info(f"SearchProductsDatabase Cypher:\n{cypher_query.strip()}\nParams: {params}")
@@ -214,7 +215,8 @@ def get_product_details_db(product_name: str):
                [(p)-[:HAS_SPEC]->(s:Spec) | s.key + ': ' + s.value] AS specs,
                [(p)-[:AVAILABLE_IN_WATTAGE]->(wo:WattageOption) | wo.name] AS wattages,
                [(p)-[:AVAILABLE_IN_COLOR]->(co:ColorOption) | co.name] AS colors,
-               [(p)-[:BELONGS_TO_COLLECTION]->(col:Collection) | col.name] AS collections
+               [(p)-[:BELONGS_TO_COLLECTION]->(col:Collection) | col.name] AS collections,
+               [(p)-[:BELONGS_TO_TENANT]->(t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) | o.text][0] AS global_offers
         """
         from src.services.agent.context import tenant_context
         params = {"lucene_query": lucene_query, "tenant_id": tenant_context.get()}
@@ -267,6 +269,11 @@ def get_product_details_db(product_name: str):
         if product.get('feature_descriptions'):
             output += f"Features: {product.get('feature_descriptions')}\n"
 
+        # Global Offers
+        global_offers = product.get('global_offers')
+        if global_offers:
+            output += f"Global Offers: {global_offers}\n"
+
         return output.encode("ascii", errors="ignore").decode("ascii")
     except Exception as e:
         logger.error(f"Error in ProductDetailsDatabase: {e}", exc_info=True)
@@ -304,6 +311,23 @@ def query_policies(query: str):
     if not results:
         return "No relevant policy found."
     text = "\n\n".join([doc.page_content for doc, _ in results])
+
+    # Prepend Global Offers to context
+    global_offers_text = ""
+    try:
+        from src.services.agent.context import tenant_context
+        tenant_id = tenant_context.get()
+        offer_res = AgentConfig.graph.query(
+            "MATCH (t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) WHERE (t.id = $tenant_id OR $tenant_id IS NULL) RETURN o.text AS text LIMIT 1",
+            params={"tenant_id": tenant_id}
+        )
+        if offer_res and offer_res[0].get("text"):
+            global_offers_text = offer_res[0]["text"] + "\n\n---\n"
+    except Exception as e:
+        logger.error(f"Error fetching global offers: {e}")
+
+    text = global_offers_text + text
+
     return text.encode("ascii", errors="ignore").decode("ascii")
 
 
@@ -338,66 +362,60 @@ def query_product_faqs(query: str):
 
 def query_general_knowledge(query: str):
     """
-    Search blog articles and general lighting knowledge stored as Chunk nodes.
-    Uses full-text search on the chunk_text index.
+    Search blog articles, offers, and general lighting knowledge stored as Chunk nodes.
+    Uses vector search on the inventaa_faq_vector index.
     """
     try:
-        _STOP = {"the", "a", "an", "is", "are", "which", "one", "better", "vs",
-                 "or", "and", "for", "of", "in", "with", "what", "how", "do",
-                 "does", "can", "will", "between", "difference"}
-        # Strip Lucene special chars: + - && || ! ( ) { } [ ] ^ " ~ * ? : \ /
-        _LUCENE_SPECIAL = re.compile(r'[+\-&|!(){}\[\]^"~*?:\\/.,?!\'"–—]')
-        raw_tokens = []
-        for word in query.split():
-            # First split on hyphens (Wave-Free → Wave, Free), then clean each part
-            parts = word.split("-")
-            for part in parts:
-                clean = _LUCENE_SPECIAL.sub("", part).strip()
-                if clean:
-                    raw_tokens.append(clean)
-        good = [t + "~" for t in raw_tokens if t and len(t) > 2 and t.lower() not in _STOP]
-        if not good:
-            return "No relevant articles found."
-        lucene_query = " AND ".join(good[:5])
-        logger.info(f"GeneralKnowledgeDatabase | lucene={lucene_query!r}")
-
-        cypher = """
-        CALL db.index.fulltext.queryNodes("chunk_text", $q) YIELD node AS c, score
-        WHERE (c.tenant = $tenant_id OR c.tenant IS NULL) AND score > 0.5
-        WITH c, score
-        RETURN c.text AS text, score
-        ORDER BY score DESC
-        LIMIT 3
-        """
+        from langchain_neo4j import Neo4jVector
+        import os
+        
+        if AgentConfig.general_vector_store is None:
+            NEO4J_URI = os.getenv("NEO4J_URI", "").replace("neo4j+s://", "neo4j+ssc://")
+            AgentConfig.general_vector_store = Neo4jVector.from_existing_index(
+                embedding=AgentConfig.embeddings, url=NEO4J_URI, 
+                username=os.getenv("NEO4J_USERNAME"), password=os.getenv("NEO4J_PASSWORD"),
+                index_name="inventaa_faq_vector", text_node_property="text"
+            )
+            
         from src.services.agent.context import tenant_context
         tenant_id = tenant_context.get()
-        res = AgentConfig.graph.query(cypher, params={"q": lucene_query, "tenant_id": tenant_id})
-
-        if not res:
-            # Fallback: try with only the first distinctive token (no fuzzy)
-            key_token = good[0].rstrip("~")
-            logger.info(f"GeneralKnowledgeDatabase fallback: trying single token '{key_token}'")
-            res = AgentConfig.graph.query(cypher, params={"q": key_token, "tenant_id": tenant_id})
-
-        if not res:
+        filter_dict = {"tenant": tenant_id} if tenant_id else None
+        
+        logger.info(f"GeneralKnowledgeDatabase | vector_search={query!r}")
+        results = AgentConfig.general_vector_store.similarity_search_with_score(query, k=3, filter=filter_dict)
+        
+        if not results:
             return "No relevant articles found."
-
-        # Concatenate results, strip markdown images/links to reduce noise
+            
         combined = []
-        for row in res:
-            text = row.get("text") or ""
-            # Strip markdown image/link syntax
+        for doc, score in results:
+            text = doc.page_content or ""
             text = re.sub(r"!\[.*?\]\(.*?\)", "", text)
             text = re.sub(r"\[.*?\]\(.*?\)", "", text)
             text = re.sub(r"---.*?---", "", text, flags=re.DOTALL)
             text = re.sub(r"\s+", " ", text).strip()
             if len(text) > 50:
-                combined.append(text[:1500])  # limit per chunk
-
+                combined.append(text[:1500])
+                
         if not combined:
             return "No relevant articles found."
-
+            
         output = "\n\n---\n".join(combined)
+
+        # Prepend Global Offers to context
+        global_offers_text = ""
+        try:
+            offer_res = AgentConfig.graph.query(
+                "MATCH (t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) WHERE (t.id = $tenant_id OR $tenant_id IS NULL) RETURN o.text AS text LIMIT 1",
+                params={"tenant_id": tenant_id}
+            )
+            if offer_res and offer_res[0].get("text"):
+                global_offers_text = offer_res[0]["text"] + "\n\n---\n"
+        except Exception as e:
+            logger.error(f"Error fetching global offers: {e}")
+
+        output = global_offers_text + output
+
         return output.encode("ascii", errors="ignore").decode("ascii")
     except Exception as e:
         logger.error(f"Error in GeneralKnowledgeDatabase: {e}", exc_info=True)
@@ -462,11 +480,10 @@ def get_tools():
             name="PolicyVectorDatabase",
             func=query_policies,
             description=(
-                "Use this for company-wide policies and general operational questions: "
+                "Use this for company-wide operational policies: "
                 "shipping, delivery time, delivery charges, order tracking, return policy, "
                 "replacement process, exchange process, warranty claim procedure, "
                 "bulk pricing, dealer/distributor pricing, contractor rates, "
-                "discounts, offers, promotions, coupon codes, "
                 "damaged product on arrival, wrong item received, required documents for claims. "
                 "Do NOT use for product-specific specs or features."
             )
@@ -492,10 +509,12 @@ def get_tools():
             name="GeneralKnowledgeDatabase",
             func=query_general_knowledge,
             description=(
-                "Use this for educational, comparison, and 'how-to' questions about lighting concepts "
+                "Use this to search for active offers, discounts, promotions, and coupon codes. "
+                "Also use this for educational, comparison, and 'how-to' questions about lighting concepts "
                 "that are NOT about a specific product and NOT a company policy. "
                 "This searches Inventaa's blog articles and knowledge base. "
                 "Examples: "
+                "'Are there any offers on solar lights?', "
                 "'Wave-Free LED Panel Lights vs Traditional LED Panel Lights', "
                 "'What is the difference between bollard and pathway lights?', "
                 "'How to choose outdoor lighting?', "

@@ -40,7 +40,9 @@ _BASE_RULE = (
     "   - Always use `SearchProductsDatabase` to search for products. If the tool returns `needs_clarification` with a list of `available_collections`, you MUST present those collections to the user and ask them to narrow down their choice.\n"
     "2. If the tool returns no data, say: \"I'm sorry, I don't have that information in our database.\"\n"
     "3. NEVER hallucinate product names, prices, specs, or policies.\n"
-    "4. CRITICAL: NEVER manually list or type out product options as text. If you need to recommend or show products, you MUST call the `SearchProductsDatabase` tool so the UI can render them with images. Do not summarize products from conversation history into text.\n\n"
+    "4. CRITICAL: NEVER manually list or type out product options as text. If you need to recommend or show products, you MUST call the `SearchProductsDatabase` tool so the UI can render them with images. Do not summarize products from conversation history into text.\n"
+    "5. When answering questions about policies, offers, or discounts, you MUST explicitly list out the exact percentages, tiers, and details provided by the tool. Do not just summarize that they exist.\n"
+    "6. If the tool returns store-wide or generic discounts (e.g. 'Extra 5% OFF on Rs 7500'), state those exact tiers. NEVER invent a specific percentage discount (like '50% off') for a product category if the tool does not explicitly state it.\n\n"
 )
 
 
@@ -66,10 +68,10 @@ def get_intent_prompts():
         INTENT_POLICY: (
             _BASE_RULE +
             "If the user is asking about the warranty for a specific product from the conversation, use ProductDetailsDatabase.\\n"
-            "Use GeneralKnowledgeDatabase to search for general coupon codes and shipping/replacement policies.\\n"
-            "Otherwise, use PolicyVectorDatabase to answer questions about general company policies, offers, and discounts.\\n"
-            "Topics: shipping, delivery time, return/replacement, warranty claims, "
-            "bulk pricing, dealer rates, damaged/wrong items, general coupon codes, discounts, offers."
+            "Use GeneralKnowledgeDatabase to search for general coupon codes, active offers, discounts, and shipping/replacement policies. IMPORTANT: Provide ONLY the core policy keywords as the query (e.g., 'offers', 'discount', 'shipping'), not the product names.\\n"
+            "Otherwise, use PolicyVectorDatabase to answer questions about general company policies.\\n"
+            "Topics for PolicyVectorDatabase: shipping, delivery time, return/replacement, warranty claims, "
+            "bulk pricing, dealer rates, damaged/wrong items."
         ),
         INTENT_ADVICE: (
             _BASE_RULE +
