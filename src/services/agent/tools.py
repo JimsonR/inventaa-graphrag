@@ -469,8 +469,9 @@ def get_tools():
             func=get_categories_db,
             description=(
                 "Use this to fetch the list of available product categories from the database. "
-                "Call this when the user's request is extremely broad (e.g. 'show me products') "
+                "Call this ONLY when the user's request is extremely broad (e.g. 'show me products', 'show indoor lights', 'show outdoor lights') "
                 "to find out what options exist before asking them a clarifying question. "
+                "Do NOT call this if the user asks for a specific type (e.g. 'solar lights', 'wall lights', 'gate lights', 'bollard lights'). "
                 "Do NOT call this if you already know their preferred category from long-term memory."
             )
         ),
