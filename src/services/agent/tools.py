@@ -164,11 +164,13 @@ RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
         
         # Intercept if the query matches products across multiple distinct collections and is large
         if len(all_collections) > 2 and len(res) >= 10 and not category and not collection:
-            return json.dumps({
-                "status": "needs_clarification",
-                "message": "The query matched many products across multiple different collections. Ask the user to narrow down their choice from the available collections.",
-                "available_collections": sorted(list(all_collections))
-            }, indent=2, ensure_ascii=False)
+            lines = [
+                "I found many products matching your request across several different collections.",
+                "Could you please specify which type of light you're looking for?"
+            ]
+            for c in sorted(list(all_collections)):
+                lines.append(f"• {c}")
+            return "\n".join(lines)
 
         return json.dumps(res, indent=2, ensure_ascii=False)
 
@@ -498,6 +500,7 @@ def get_tools():
             name="PolicyVectorDatabase",
             func=query_policies,
             description=(
+                "Use this for company-wide operational policies: "
                 "Use this for company-wide operational policies: "
                 "shipping, delivery time, delivery charges, order tracking, return policy, "
                 "replacement process, exchange process, warranty claim procedure, "

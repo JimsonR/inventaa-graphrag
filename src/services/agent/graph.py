@@ -307,7 +307,8 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                     )
                     return parsed_json
                 except (json.JSONDecodeError, TypeError):
-                    logger.warning("--- GRAPH FINISHED: Failed to parse tool JSON, falling back to conversational ---")
+                    logger.info("--- GRAPH FINISHED: Returning plain text from SearchProductsDatabase ---")
+                    return product_result
 
             # Otherwise return the last AIMessage content (policy / FAQ / detail answer)
             last_ai = next(
