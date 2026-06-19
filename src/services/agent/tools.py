@@ -434,26 +434,41 @@ def get_product_details_db(product_name: str):
 
 def get_categories_db(*args, **kwargs):
     """
-    Returns all available product categories currently in the database.
+    Returns all available product categories and collections currently in the database.
     """
     try:
         from src.services.agent.context import tenant_context
         tenant_id = tenant_context.get()
         
-        cypher = "MATCH (c:Category)-[:HAS_PRODUCT]->(p:Product)\n"
+        # Get Categories
+        cat_cypher = "MATCH (c:Category)-[:HAS_PRODUCT]->(p:Product)\n"
         params = {}
         if tenant_id:
-            cypher += "WHERE p.tenant = $tenant_id\n"
+            cat_cypher += "WHERE p.tenant = $tenant_id\n"
             params["tenant_id"] = tenant_id
             
-        cypher += "RETURN DISTINCT c.name AS category ORDER BY category"
-        res = AgentConfig.graph.query(cypher, params=params)
+        cat_cypher += "RETURN DISTINCT c.name AS category ORDER BY category"
+        cat_res = AgentConfig.graph.query(cat_cypher, params=params)
+        cats = [r["category"] for r in cat_res] if cat_res else []
         
-        if not res:
-            return "No categories found in the database."
+        # Get Collections
+        col_cypher = "MATCH (c:Collection)<-[:BELONGS_TO_COLLECTION]-(p:Product)\n"
+        if tenant_id:
+            col_cypher += "WHERE p.tenant = $tenant_id\n"
+        col_cypher += "RETURN DISTINCT c.name AS collection ORDER BY collection"
+        col_res = AgentConfig.graph.query(col_cypher, params=params)
+        cols = [r["collection"] for r in col_res] if col_res else []
+        
+        output = []
+        if cats:
+            output.append("Available Categories: " + ", ".join(cats))
+        if cols:
+            output.append("Available Collections: " + ", ".join(cols))
             
-        cats = [r["category"] for r in res]
-        return "Available Categories in DB: " + ", ".join(cats)
+        if not output:
+            return "No categories or collections found in the database."
+            
+        return "\n".join(output)
     except Exception as e:
         logger.error(f"Error in GetCategoriesDatabase: {e}", exc_info=True)
         return f"Error getting categories: {e}"
