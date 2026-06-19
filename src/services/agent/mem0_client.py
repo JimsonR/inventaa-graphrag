@@ -102,13 +102,23 @@ def fetch_long_term_context(query: str, user_id: str) -> str:
             results = results["results"]
             
         facts = []
+        seen_core_facts = set()
+        
         for res in results:
+            fact_str = ""
             if isinstance(res, dict):
-                facts.append(f"- {res.get('memory', res)}")
+                fact_str = str(res.get('memory', res))
             elif hasattr(res, 'memory'):
-                facts.append(f"- {res.memory}")
+                fact_str = str(res.memory)
             else:
-                facts.append(f"- {res}")
+                fact_str = str(res)
+                
+            # Naive deduplication: strip off common date endings like " as of June 19, 2026" or " on June 19, 2026"
+            core_fact = fact_str.lower().split(" as of ")[0].split(" on ")[0].strip()
+            
+            if core_fact not in seen_core_facts:
+                seen_core_facts.add(core_fact)
+                facts.append(f"- {fact_str}")
         
         if not facts:
             return ""
