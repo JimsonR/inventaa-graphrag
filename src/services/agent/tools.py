@@ -196,7 +196,7 @@ def _classify_query(query: str):
 def search_products_db(
     query: Optional[str] = None,
     category: Optional[str] = None,
-    collection: Optional[str] = Field(None, description="Available collections: '3 in 1 gate light', 'Divine Light For Home Entrance', 'Indoor Commercial Lights', 'Indoor Domestic Lights', 'LED Outdoor Wall Light', 'Outdoor Commercial Lights', 'Outdoor Garden Bollard Light', 'Outdoor LED Gate Lamp Lights', 'Outdoor LED Solar Powered Garden Or Street Light Online'"),
+    collection: Optional[str] = None,
     use_case: Optional[str] = None,
     feature: Optional[str] = None,
     spec: Optional[str] = None,
@@ -605,6 +605,7 @@ def get_tools():
                 "'Gate & Pillar Lights', 'Solar Lights', 'Outdoor Wall Lights', 'Bollard & Garden Lights', "
                 "'Street Lights', 'Flood Lights', 'Indoor & Ceiling Lights', 'Panel Lights', "
                 "'Pathway & Step Lights', 'Bulkhead Lights', 'Divine & Temple Lights', 'General Purpose Lights'"
+                "\n- collection (str): filter by collection name. Available collections: '3 in 1 gate light', 'Divine Light For Home Entrance', 'Indoor Commercial Lights', 'Indoor Domestic Lights', 'LED Outdoor Wall Light', 'Outdoor Commercial Lights', 'Outdoor Garden Bollard Light', 'Outdoor LED Gate Lamp Lights', 'Outdoor LED Solar Powered Garden Or Street Light Online'"
                 "\n- feature (str): one of: solar-powered, waterproof, IP65-rated, IP66-rated, motion-sensor, "
                 "dimmable, warm-white, cool-white, neutral-white, 3-in-1-colour, aluminium-body, "
                 "polycarbonate-body, surface-mount, wall-mount, rustproof, UV-protected, energy-efficient"
