@@ -2,6 +2,7 @@ import json
 import logging
 import re
 from typing import Optional
+from pydantic import Field
 from langchain_core.tools import StructuredTool, Tool
 from src.services.agent.config import AgentConfig
 
@@ -195,6 +196,7 @@ def _classify_query(query: str):
 def search_products_db(
     query: Optional[str] = None,
     category: Optional[str] = None,
+    collection: Optional[str] = Field(None, description="Available collections: '3 in 1 gate light', 'Divine Light For Home Entrance', 'Indoor Commercial Lights', 'Indoor Domestic Lights', 'LED Outdoor Wall Light', 'Outdoor Commercial Lights', 'Outdoor Garden Bollard Light', 'Outdoor LED Gate Lamp Lights', 'Outdoor LED Solar Powered Garden Or Street Light Online'"),
     use_case: Optional[str] = None,
     feature: Optional[str] = None,
     spec: Optional[str] = None,
@@ -244,6 +246,11 @@ MATCH (cat:Category {name: $category})-[:HAS_PRODUCT]->(p:Product)
         if final_usecase:
             cypher_query += "MATCH (p)-[:SUITABLE_FOR]->(uc:UseCase {name: $use_case})\n"
             params["use_case"] = final_usecase
+            
+        # Collection filter
+        if collection:
+            cypher_query += "MATCH (p)-[:BELONGS_TO_COLLECTION]->(col:Collection {name: $collection})\n"
+            params["collection"] = collection
 
         # Feature filter
         if final_features:
@@ -295,11 +302,13 @@ MATCH (cat:Category {name: $category})-[:HAS_PRODUCT]->(p:Product)
         cypher_query += f"""
 OPTIONAL MATCH (p)-[:HAS_WARRANTY]->(w:Warranty)
 OPTIONAL MATCH (p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'replacement' OR toLower(pol.title) CONTAINS 'exchange'
+OPTIONAL MATCH (p)-[:BELONGS_TO_COLLECTION]->(col2:Collection)
 RETURN DISTINCT p.sku AS sku, p.name AS name, p.price_num AS price_num,
        p.regular_price AS regular_price, p.discount_percentage AS discount_percentage,
        p.image_url AS image_url, p.url AS url, p.rating_score AS rating,
        p.review_count AS review_count, p.tenant AS tenant, p.feature_descriptions AS feature_descriptions,
-       p.installation_url AS installation_url, w.description AS warranty, pol.content AS replacement_exchange_policy
+       p.installation_url AS installation_url, w.description AS warranty, pol.content AS replacement_exchange_policy,
+       collect(DISTINCT col2.name) AS collections
 {sort_clause}
 LIMIT $limit
 """
@@ -351,6 +360,7 @@ def get_product_details_db(product_name: str):
         OPTIONAL MATCH (p)-[:HAS_SPEC]->(s:Spec)
         OPTIONAL MATCH (p)-[:AVAILABLE_IN_WATTAGE]->(wo:WattageOption)
         OPTIONAL MATCH (p)-[:AVAILABLE_IN_COLOR]->(co:ColorOption)
+        OPTIONAL MATCH (p)-[:BELONGS_TO_COLLECTION]->(col:Collection)
         RETURN p.name AS name, p.price_num AS price,
                p.feature_descriptions AS feature_descriptions,
                p.installation_url AS installation_url,
@@ -358,7 +368,8 @@ def get_product_details_db(product_name: str):
                w.description AS warranty_info, w.duration_years AS warranty_duration,
                collect(DISTINCT s.key + ': ' + s.value) AS specs,
                collect(DISTINCT wo.name) AS wattages,
-               collect(DISTINCT co.name) AS colors
+               collect(DISTINCT co.name) AS colors,
+               collect(DISTINCT col.name) AS collections
         """
         from src.services.agent.context import tenant_context
         params = {"lucene_query": lucene_query, "tenant_id": tenant_context.get()}
@@ -386,6 +397,11 @@ def get_product_details_db(product_name: str):
         colors = [c for c in (product.get('colors') or []) if c]
         if colors:
             output += f"Available Colors: {', '.join(sorted(colors))}\n"
+
+        # Collections
+        collections = [c for c in (product.get('collections') or []) if c]
+        if collections:
+            output += f"Collections: {', '.join(sorted(collections))}\n"
 
         # Warranty & Policies
         if product.get('warranty_info'):
