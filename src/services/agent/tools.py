@@ -87,7 +87,6 @@ def search_products_db(
             params[tok_key] = term
             where_clauses.append(f"""
             (toLower(p.name) CONTAINS ${tok_key} 
-             OR toLower(p.feature_descriptions) CONTAINS ${tok_key}
              OR size([(p)-[:BELONGS_TO_COLLECTION]->(c:Collection) WHERE toLower(c.name) CONTAINS ${tok_key} | 1]) > 0
              OR size([(p)-[:HAS_FEATURE]->(f:Feature) WHERE toLower(f.name) CONTAINS ${tok_key} | 1]) > 0
              OR size([(p)-[:SUITABLE_FOR]->(u:UseCase) WHERE toLower(u.name) CONTAINS ${tok_key} | 1]) > 0)
