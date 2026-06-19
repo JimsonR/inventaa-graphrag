@@ -54,8 +54,10 @@ def get_intent_prompts():
         INTENT_SEARCH: (
             _BASE_RULE +
             "Use SearchProductsDatabase to find products.\\n"
-            "Pass the user's natural language as the 'query' param. You could also incorporate any long-term user preferences or context provided to you if relevant. For example, if memory says the user prefers garden lights, you could set the `category` parameter to 'Bollard & Garden Lights'.\\n"
-            "Use max_price for budget limits. Use sort_by for cheapest/best-rated.\\n"
+            "Pass the user's natural language as the 'query' param. "
+            "If the user asks for a broad term (like 'indoor' or 'outdoor') that conceptually matches multiple different collections, DO NOT guess and DO NOT call the tool. Instead, reply directly asking them to clarify which specific collection they want (list the matching ones as bullet points).\\n"
+            "CRITICAL EXCEPTION: If the user's query exactly or nearly exactly matches ONE collection name (e.g., 'solar lights' matches 'Solar Lights', or 'gate light' matches 'Outdoor LED Gate Lamp Lights'), DO NOT ask for clarification. Immediately call SearchProductsDatabase and pass that collection name to the `category` param.\\n"
+            "If you do call the tool, you could incorporate long-term preferences. Use max_price for budget limits.\\n"
             f"Available categories (collections): {collections_str}"
         ),
         INTENT_DETAIL: (

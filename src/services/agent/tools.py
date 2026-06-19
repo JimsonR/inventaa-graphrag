@@ -70,18 +70,19 @@ def search_products_db(
             where_clauses.append("(p.tenant = $tenant_id OR p.tenant IS NULL)")
             params["tenant_id"] = tenant_id
 
-        # ─── 1. Full-Text Search on Product Name for raw query ──────────────────
-        if query and query.strip():
+        # 1. Full-Text Search
+        if query:
             _STOP = {
                 "led", "light", "lights", "lamp", "lamps", "the", "a", "an", "and", "or", "for", "of", "in", "with", 
                 "by", "from", "lighting", "offers", "offer", "discount", "discounts", "sale", "deal", "deals", 
-                "best", "top", "cheap", "cheapest", "buy", "show", "me", "any", "on"
+                "best", "top", "cheap", "cheapest", "buy", "show", "me", "any", "on", "indoor", "outdoor"
             }
             raw = [t.strip(".,?!-–—/|") for t in query.split()]
             good_tokens = [t.lower() for t in raw if t and len(t) > 2 and t.lower() not in _STOP]
             
             if good_tokens:
-                lucene_query = " AND ".join([t + "~" for t in good_tokens])
+                # Use prefix matching instead of fuzzy to prevent 'indoor' from matching 'door' or 'outdoor'
+                lucene_query = " AND ".join([t + "*" for t in good_tokens])
                 cypher_query += 'CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score\n'
                 params["lucene_query"] = lucene_query
             else:

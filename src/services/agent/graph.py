@@ -253,7 +253,7 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
             # ─── Semantic Cache: Lookup ──────────────────────────────────────────
             cache_threshold = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.95"))
             cache_ttl = int(os.getenv("CACHE_TTL_SECONDS", "86400"))  # 24 hours
-            cache_skip = ["detail", "search"]  # product and detail lookups should always be fresh
+            cache_skip = ["detail", "search", "policy"]  # product, detail, and policy lookups should always be fresh
             
             cached = cache_lookup(
                 embedding=query_embedding,
