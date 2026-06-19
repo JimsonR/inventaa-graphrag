@@ -5,7 +5,7 @@ import time
 import os
 from typing import Optional, List, Dict, Any
 from pydantic import Field
-from langchain_core.tools import tool, StructuredTool, Tool
+from langchain_core.tools import StructuredTool, Tool
 from src.services.agent.config import AgentConfig
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,6 @@ logger = logging.getLogger(__name__)
 
 
 
-@tool
 def search_products_db(
     query: Optional[str] = None,
     category: Optional[str] = None,
