@@ -61,63 +61,51 @@ def search_products_db(
         logger.info(f"SearchProducts | query={query!r} | category={category!r} "
                     f"| use_case={use_case!r} | feature={feature!r}")
 
-        # Meta-collection explicit handling
-        final_category = category or collection
-        meta_mapping = {
-            "indoor": "indoor",
-            "outdoor": "outdoor",
-            "solar": "solar-powered"
-        }
+        cypher_query = "MATCH (p:Product)\n"
+        where_clauses = []
         
-        if final_category and final_category.lower() in meta_mapping:
-            feature = feature or meta_mapping[final_category.lower()]
-            final_category = None
-
-        # Build Cypher: start from Collection for maximum precision when category is known
-        if final_category:
-            cypher_query = """
-MATCH (col:Collection {name: $category})<-[:BELONGS_TO_COLLECTION]-(p:Product)
-"""
-            params["category"] = final_category
-        else:
-            cypher_query = "MATCH (p:Product)\n"
-
         from src.services.agent.context import tenant_context
         tenant_id = tenant_context.get()
         if tenant_id:
-            where_clauses = ["p.tenant = $tenant_id"]
+            where_clauses.append("p.tenant = $tenant_id")
             params["tenant_id"] = tenant_id
-        else:
-            where_clauses = []
 
-        # UseCase filter
-        if use_case:
-            cypher_query += "MATCH (p)-[:SUITABLE_FOR]->(uc:UseCase {name: $use_case})\n"
-            params["use_case"] = use_case
+        # ─── 1. Tokenize Search Terms ───────────────────────────────────────────
+        # We extract unique tokens from all text-based fields provided by the LLM
+        search_terms = []
+        for text in filter(None, [query, category, collection, feature, use_case]):
+            _STOP = {"led", "light", "lights", "lamp", "lamps", "the", "a", "an", "and", "or", "for", "of", "in", "with", "by", "from", "lighting"}
+            raw = [t.strip(".,?!-–—/|") for t in text.split()]
+            search_terms.extend([t.lower() for t in raw if t and len(t) > 2 and t.lower() not in _STOP])
 
-        # Feature filter
-        if feature:
-            cypher_query += "MATCH (p)-[:HAS_FEATURE]->(f:Feature {name: $feature})\n"
-            params["feature"] = feature
+        search_terms = list(set(search_terms))  # unique tokens
 
-        # Spec filter
+        # ─── 2. Build Dynamic Graph Traversal ───────────────────────────────────
+        # For each token, we check if it matches the Product's text, OR any of its connected metadata nodes
+        for i, term in enumerate(search_terms):
+            tok_key = f"stok_{i}"
+            params[tok_key] = term
+            where_clauses.append(f"""
+            (toLower(p.name) CONTAINS ${tok_key} 
+             OR toLower(p.feature_descriptions) CONTAINS ${tok_key}
+             OR size([(p)-[:BELONGS_TO_COLLECTION]->(c:Collection) WHERE toLower(c.name) CONTAINS ${tok_key} | 1]) > 0
+             OR size([(p)-[:HAS_FEATURE]->(f:Feature) WHERE toLower(f.name) CONTAINS ${tok_key} | 1]) > 0
+             OR size([(p)-[:SUITABLE_FOR]->(u:UseCase) WHERE toLower(u.name) CONTAINS ${tok_key} | 1]) > 0)
+            """.strip())
+
+        # ─── 3. Add Technical Spec filter if provided ───────────────────────────
         if spec:
             cypher_query += "MATCH (p)-[:HAS_SPEC]->(s:Spec)\n"
             where_clauses.append("(toLower(s.key) CONTAINS toLower($spec) OR toLower(s.value) CONTAINS toLower($spec))")
             params["spec"] = spec
 
-        # Price filters
+        # ─── 4. Add Price filters if provided ───────────────────────────────────
         if min_price is not None:
             where_clauses.append("p.price_num >= $min_price")
             params["min_price"] = min_price
         if max_price is not None:
             where_clauses.append("p.price_num <= $max_price")
             params["max_price"] = max_price
-
-        # Text matching on query if no structured params found
-        if query and not final_category and not use_case and not feature and not spec:
-            where_clauses.append("(toLower(p.name) CONTAINS toLower($query) OR toLower(p.feature_descriptions) CONTAINS toLower($query))")
-            params["query"] = query
 
         if where_clauses:
             cypher_query += "WHERE " + " AND ".join(where_clauses) + "\n"
@@ -161,7 +149,7 @@ RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
             all_collections.update(cols)
         
         # Intercept if the query matches products across multiple distinct collections and is large
-        if len(all_collections) > 2 and len(res) >= 10 and not final_category:
+        if len(all_collections) > 2 and len(res) >= 10 and not category and not collection:
             return json.dumps({
                 "status": "needs_clarification",
                 "message": "The query matched many products across multiple different collections. Ask the user to narrow down their choice from the available collections.",
