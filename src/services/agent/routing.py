@@ -44,45 +44,47 @@ _BASE_RULE = (
     "4. CRITICAL: NEVER manually list or type out product options as text. If you need to recommend or show products, you MUST call the `SearchProductsDatabase` tool so the UI can render them with images. Do not summarize products from conversation history into text.\n\n"
 )
 
-INTENT_PROMPTS = {
-    INTENT_SEARCH: (
-        _BASE_RULE +
-        "Use SearchProductsDatabase to find products.\n"
-        "Pass the user's natural language as the 'query' param. You could also incorporate any long-term user preferences or context provided to you if relevant. For example, if memory says the user prefers garden lights, you could set the `category` parameter to 'Bollard & Garden Lights' even if their current message is broad like 'show outdoor lights'.\n"
-        "Use max_price for budget limits. Use sort_by for cheapest/best-rated.\n"
-        "Available categories (collections): 3 in 1 gate light | Divine Light For Home Entrance | "
-        "Indoor Commercial Lights | Indoor Domestic Lights | LED Outdoor Wall Light | "
-        "Outdoor Commercial Lights | Outdoor Garden Bollard Light | Outdoor LED Gate Lamp Lights | "
-        "Outdoor LED Solar Powered Garden Or Street Light Online"
-    ),
-    INTENT_DETAIL: (
-        _BASE_RULE +
-        "CRITICAL: ALWAYS use the ProductDetailsDatabase tool to look up the specific named product before answering. "
-        "Do NOT rely on conversational memory for specs or warranty. "
-        "Pass the product name as 'product_name'. "
-        "The tool returns wattage options, colour options, specs, and warranty directly from the Neo4j database."
-    ),
-    INTENT_POLICY: (
-        _BASE_RULE +
-        "If the user is asking about the warranty for a specific product from the conversation, use ProductDetailsDatabase.\n"
-        "Use GeneralKnowledgeDatabase to search for general coupon codes and shipping/replacement policies.\n"
-        "Otherwise, use PolicyVectorDatabase to answer questions about general company policies.\n"
-        "Topics: shipping, delivery time, return/replacement, warranty claims, "
-        "bulk pricing, dealer rates, damaged/wrong items, general coupon codes."
-    ),
-    INTENT_ADVICE: (
-        _BASE_RULE +
-        "Use ProductAdviceDatabase to answer general product FAQs NOT tied to a specific product.\n"
-        "Topics: installation, mounting, smart switch/timer compatibility, "
-        "coastal suitability, LED lifespan, electricity savings, maintenance."
-    ),
-    INTENT_KNOWLEDGE: (
-        _BASE_RULE +
-        "Use GeneralKnowledgeDatabase to answer educational or comparison questions about lighting.\n"
-        "Topics: LED vs fluorescent, wave-free vs traditional, what is IP rating, "
-        "how to choose outdoor lighting, benefits of solar, CRI, lumens guide."
-    ),
-}
+
+def get_intent_prompts():
+    from src.services.agent.config import AgentConfig
+    collections_str = " | ".join(AgentConfig.collections) if AgentConfig.collections else "3 in 1 gate light | Divine Light For Home Entrance | Indoor Commercial Lights | Indoor Domestic Lights | LED Outdoor Wall Light | Outdoor Commercial Lights | Outdoor Garden Bollard Light | Outdoor LED Gate Lamp Lights | Outdoor LED Solar Powered Garden Or Street Light Online"
+    
+    return {
+        INTENT_SEARCH: (
+            _BASE_RULE +
+            "Use SearchProductsDatabase to find products.\\n"
+            "Pass the user's natural language as the 'query' param. You could also incorporate any long-term user preferences or context provided to you if relevant. For example, if memory says the user prefers garden lights, you could set the `category` parameter to 'Bollard & Garden Lights' even if their current message is broad like 'show outdoor lights'.\\n"
+            "Use max_price for budget limits. Use sort_by for cheapest/best-rated.\\n"
+            f"Available categories (collections): {collections_str}"
+        ),
+        INTENT_DETAIL: (
+            _BASE_RULE +
+            "CRITICAL: ALWAYS use the ProductDetailsDatabase tool to look up the specific named product before answering. "
+            "Do NOT rely on conversational memory for specs or warranty. "
+            "Pass the product name as 'product_name'. "
+            "The tool returns wattage options, colour options, specs, and warranty directly from the Neo4j database."
+        ),
+        INTENT_POLICY: (
+            _BASE_RULE +
+            "If the user is asking about the warranty for a specific product from the conversation, use ProductDetailsDatabase.\\n"
+            "Use GeneralKnowledgeDatabase to search for general coupon codes and shipping/replacement policies.\\n"
+            "Otherwise, use PolicyVectorDatabase to answer questions about general company policies.\\n"
+            "Topics: shipping, delivery time, return/replacement, warranty claims, "
+            "bulk pricing, dealer rates, damaged/wrong items, general coupon codes."
+        ),
+        INTENT_ADVICE: (
+            _BASE_RULE +
+            "Use ProductAdviceDatabase to answer general product FAQs NOT tied to a specific product.\\n"
+            "Topics: installation, mounting, smart switch/timer compatibility, "
+            "coastal suitability, LED lifespan, electricity savings, maintenance."
+        ),
+        INTENT_KNOWLEDGE: (
+            _BASE_RULE +
+            "Use GeneralKnowledgeDatabase to answer educational or comparison questions about lighting.\\n"
+            "Topics: LED vs fluorescent, wave-free vs traditional, what is IP rating, "
+            "how to choose outdoor lighting, benefits of solar, CRI, lumens guide."
+        ),
+    }
 
 # ─── Per-intent allowed tool names ────────────────────────────────────────────
 INTENT_TOOLS = {
@@ -148,7 +150,7 @@ def classify_intent(query: str, llm=None, history_context: str = "") -> str:
         intent = result.intent.lower()
         
         # Validate LLM output against known intents
-        if intent not in INTENT_PROMPTS:
+        if intent not in get_intent_prompts():
             logger.warning(f"[Router] LLM returned unknown intent '{intent}', defaulting to 'search'.")
             intent = INTENT_SEARCH
             
@@ -176,13 +178,13 @@ def get_intent_config(
         llm: The language model used for agentic intent classification.
         explicit_intent: If provided, bypasses keyword classification entirely.
     """
-    if explicit_intent and explicit_intent in INTENT_PROMPTS:
+    if explicit_intent and explicit_intent in get_intent_prompts():
         intent = explicit_intent
         logger.info(f"[Router] intent={intent} (explicit override)")
     else:
         intent = classify_intent(query, llm=llm, history_context=history_context)
 
-    prompt = INTENT_PROMPTS[intent]
+    prompt = get_intent_prompts()[intent]
     allowed_names = set(INTENT_TOOLS[intent])
     filtered = [t for t in all_tools if t.name in allowed_names]
 

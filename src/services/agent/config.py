@@ -14,6 +14,11 @@ class AgentConfig:
     general_vector_store = None
     policy_vector_store = None
     product_faq_vector_store = None
+    
+    # Dynamic schema from graph
+    collections = []
+    use_cases = []
+    features = []
 
     @classmethod
     def initialize(cls):
@@ -56,4 +61,24 @@ class AgentConfig:
             logger.warning(f"Could not eagerly initialize Mem0 during startup: {e}")
 
         cls._initialized = True
+        
+        # 5. Fetch dynamic graph schema for LLM routing and tool prompt generation
+        try:
+            query = """
+            CALL () { MATCH (c:Collection) RETURN collect(DISTINCT c.name) AS cols }
+            CALL () { MATCH (uc:UseCase) RETURN collect(DISTINCT uc.name) AS ucs }
+            CALL () { MATCH (f:Feature) RETURN collect(DISTINCT f.name) AS feats }
+            RETURN cols, ucs, feats
+            """
+            res = cls.graph.query(query)
+            if res:
+                row = res[0]
+                cls.collections = sorted(row.get("cols", []))
+                cls.use_cases = sorted(row.get("ucs", []))
+                cls.features = sorted(row.get("feats", []))
+            
+            logger.info(f"Loaded schema dynamically: {len(cls.collections)} Collections, {len(cls.use_cases)} UseCases, {len(cls.features)} Features")
+        except Exception as e:
+            logger.error(f"Failed to fetch dynamic graph schema: {e}")
+
         logger.info("AgentConfig initialized.")

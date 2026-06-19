@@ -1,9 +1,11 @@
 import json
 import logging
 import re
-from typing import Optional
+import time
+import os
+from typing import Optional, List, Dict, Any
 from pydantic import Field
-from langchain_core.tools import StructuredTool, Tool
+from langchain_core.tools import tool, StructuredTool, Tool
 from src.services.agent.config import AgentConfig
 
 logger = logging.getLogger(__name__)
@@ -26,170 +28,13 @@ logger = logging.getLogger(__name__)
 #           post-top-mount | UV-protected | rustproof
 # ─────────────────────────────────────────────────────────────────────────────
 
-CATEGORY_KEYWORDS = {
-    # Gate & Pillar
-    "gate": "Outdoor LED Gate Lamp Lights",
-    "pillar": "Outdoor LED Gate Lamp Lights",
-    "post": "Outdoor LED Gate Lamp Lights",
-    "compound": "Outdoor LED Gate Lamp Lights",
-    "entrance": "Outdoor LED Gate Lamp Lights",
-    "boundary": "Outdoor LED Gate Lamp Lights",
-    # Solar / Street
-    "solar": "Outdoor LED Solar Powered Garden Or Street Light Online",
-    "street": "Outdoor LED Solar Powered Garden Or Street Light Online",
-    "road": "Outdoor LED Solar Powered Garden Or Street Light Online",
-    "parking": "Outdoor LED Solar Powered Garden Or Street Light Online",
-    # Outdoor Wall
-    "wall": "LED Outdoor Wall Light",
-    "sconce": "LED Outdoor Wall Light",
-    "elevation": "LED Outdoor Wall Light",
-    # Bollard & Garden
-    "bollard": "Outdoor Garden Bollard Light",
-    "garden": "Outdoor Garden Bollard Light",
-    "lawn": "Outdoor Garden Bollard Light",
-    "landscape": "Outdoor Garden Bollard Light",
-    "driveway": "Outdoor Garden Bollard Light",
-    "yard": "Outdoor Garden Bollard Light",
-    "terrace": "Outdoor Garden Bollard Light",
-    "balcony": "Outdoor Garden Bollard Light",
-    "resort": "Outdoor Garden Bollard Light",
-    "hotel": "Outdoor Garden Bollard Light",
-    "villa": "Outdoor Garden Bollard Light",
-    "community": "Outdoor Garden Bollard Light",
-    # Commercial / Flood / Pathway
-    "flood": "Outdoor Commercial Lights",
-    "stadium": "Outdoor Commercial Lights",
-    "pathway": "Outdoor Commercial Lights",
-    "step": "Outdoor Commercial Lights",
-    "stairway": "Outdoor Commercial Lights",
-    "walkway": "Outdoor Commercial Lights",
-    "stair": "Outdoor Commercial Lights",
-    "bulkhead": "Outdoor Commercial Lights",
-    "general": "Outdoor Commercial Lights",
-    # Indoor
-    "indoor": "Indoor Domestic Lights",
-    "ceiling": "Indoor Domestic Lights",
-    "downlight": "Indoor Domestic Lights",
-    "panel": "Indoor Domestic Lights",
-    # Divine & Temple
-    "divine": "Divine Light For Home Entrance",
-    "temple": "Divine Light For Home Entrance",
-    "religious": "Divine Light For Home Entrance",
-    "god": "Divine Light For Home Entrance",
-    "pooja": "Divine Light For Home Entrance",
-}
-
-USECASE_KEYWORDS = {
-    "gate": "gate-pillar",
-    "pillar": "gate-pillar",
-    "entrance": "gate-pillar",
-    "compound": "gate-pillar",
-    "post": "gate-pillar",
-    "indoor": "indoor-ceiling",
-    "ceiling": "indoor-ceiling",
-    "downlight": "indoor-ceiling",
-    "wall": "outdoor-wall",
-    "sconce": "outdoor-wall",
-    "elevation": "outdoor-wall",
-    "garden": "garden-pathway",
-    "lawn": "garden-pathway",
-    "landscape": "garden-pathway",
-    "driveway": "garden-pathway",
-    "villa": "garden-pathway",
-    "terrace": "garden-pathway",
-    "balcony": "garden-pathway",
-    "resort": "garden-pathway",
-    "hotel": "garden-pathway",
-    "bollard": "garden-pathway",
-    "pathway": "pathway-step",
-    "walkway": "pathway-step",
-    "step": "pathway-step",
-    "stairway": "pathway-step",
-    "stair": "pathway-step",
-    "street": "street-road",
-    "road": "street-road",
-    "parking": "street-road",
-    "flood": "flood-area",
-    "stadium": "flood-area",
-    "solar": "solar-outdoor",
-    "temple": "religious-decorative",
-    "divine": "religious-decorative",
-    "religious": "religious-decorative",
-    "pooja": "religious-decorative",
-}
-
-FEATURE_KEYWORDS = {
-    "outdoor": "outdoor",
-    "indoor": "indoor",
-    "solar": "solar-powered",
-    "waterproof": "waterproof",
-    "weatherproof": "waterproof",
-    "rain": "waterproof",
-    "water": "waterproof",
-    "ip65": "IP65-rated",
-    "ip66": "IP66-rated",
-    "coastal": "rustproof",
-    "motion": "motion-sensor",
-    "sensor": "motion-sensor",
-    "dimmable": "dimmable",
-    "dim": "dimmable",
-    "warm": "warm-white",
-    "cool": "cool-white",
-    "neutral": "neutral-white",
-    "3-in-1": "3-in-1-colour",
-    "colour": "3-in-1-colour",
-    "color": "3-in-1-colour",
-    "aluminium": "aluminium-body",
-    "aluminum": "aluminium-body",
-    "metal": "aluminium-body",
-    "polycarbonate": "polycarbonate-body",
-    "plastic": "polycarbonate-body",
-    "surface": "surface-mount",
-    "rustproof": "rustproof",
-    "rust": "rustproof",
-    "uv": "UV-protected",
-    "fade": "UV-protected",
-    "energy": "energy-efficient",
-    "efficient": "energy-efficient",
-}
-
-# Stop words to ignore when tokenizing queries
-_STOP_WORDS = {
-    "light", "lights", "lamp", "lamps", "led", "product", "products",
-    "show", "me", "get", "find", "list", "give", "want", "need",
-    "rated", "rating", "lowest", "highest", "best", "top", "some",
-    "a", "an", "the", "for", "with", "of", "in", "and", "or",
-    "is", "are", "what", "which", "how", "do", "can", "does",
-    "suggest", "recommend", "suitable", "use", "buy", "choose",
-    "my", "i", "we", "our", "this", "that", "under", "budget",
-    "within", "rs", "inr", "rupees", "good", "looking", "modern",
-}
 
 
-def _classify_query(query: str):
-    """Return (matched_category, matched_usecase, matched_features, remaining_tokens)."""
-    tokens = [t.lower().strip(".,?!") for t in query.split() if t.lower().strip(".,?!") not in _STOP_WORDS]
-    matched_category = None
-    matched_usecase = None
-    matched_features = []
-    remaining = []
-
-    for token in tokens:
-        cat = CATEGORY_KEYWORDS.get(token)
-        uc = USECASE_KEYWORDS.get(token)
-        feat = FEATURE_KEYWORDS.get(token)
-        if cat and not matched_category:
-            matched_category = cat
-        if uc and not matched_usecase:
-            matched_usecase = uc
-        if feat and feat not in matched_features:
-            matched_features.append(feat)
-        if not cat and not uc and not feat:
-            remaining.append(token)
-
-    return matched_category, matched_usecase, matched_features, remaining
 
 
+
+
+@tool
 def search_products_db(
     query: Optional[str] = None,
     category: Optional[str] = None,
@@ -202,30 +47,23 @@ def search_products_db(
     sort_by: Optional[str] = None,
     limit: int = 100
 ):
+    """
+    Search and filter products from the Neo4j graph database.
+    Use this tool to find, show, list, filter, or recommend products.
+    """
     from src.services.agent.utils import track_time
     tool_logger = logging.getLogger("Tool.SearchProducts")
     with track_time("Tool: SearchProductsDatabase", custom_logger=tool_logger):
-        """
-        Search and filter products from the Neo4j graph database.
-        Uses Category, UseCase, and Feature graph nodes for precise filtering.
-        sort_by values: price_asc, price_desc, rating_desc, rating_asc, reviews_desc
-        """
+        pass
+
     try:
         params = {"limit": limit}
 
-        # Auto-classify the query into category/usecase/feature
-        auto_category, auto_usecase, auto_features, remaining_tokens = _classify_query(query or "")
-
-        # Prefer explicit parameters over auto-detected ones
-        final_category = category or auto_category
-        final_usecase = use_case or auto_usecase
-        final_features = ([feature] if feature else []) + [f for f in auto_features if f != feature]
-
-        logger.info(f"SearchProducts | query={query!r} | auto_category={auto_category!r} "
-                    f"| auto_usecase={auto_usecase!r} | auto_features={auto_features} "
-                    f"| remaining_tokens={remaining_tokens}")
+        logger.info(f"SearchProducts | query={query!r} | category={category!r} "
+                    f"| use_case={use_case!r} | feature={feature!r}")
 
         # Build Cypher: start from Collection for maximum precision when category is known
+        final_category = category or collection
         if final_category:
             cypher_query = """
 MATCH (col:Collection {name: $category})<-[:BELONGS_TO_COLLECTION]-(p:Product)
@@ -243,21 +81,14 @@ MATCH (col:Collection {name: $category})<-[:BELONGS_TO_COLLECTION]-(p:Product)
             where_clauses = []
 
         # UseCase filter
-        if final_usecase:
+        if use_case:
             cypher_query += "MATCH (p)-[:SUITABLE_FOR]->(uc:UseCase {name: $use_case})\n"
-            params["use_case"] = final_usecase
-            
-        # Collection filter
-        if collection:
-            cypher_query += "MATCH (p)-[:BELONGS_TO_COLLECTION]->(col:Collection {name: $collection})\n"
-            params["collection"] = collection
+            params["use_case"] = use_case
 
         # Feature filter
-        if final_features:
-            for i, feat in enumerate(final_features[:2]):  # max 2 feature filters
-                feat_param = f"feature_{i}"
-                cypher_query += f"MATCH (p)-[:HAS_FEATURE]->(f{i}:Feature {{name: ${feat_param}}})\n"
-                params[feat_param] = feat
+        if feature:
+            cypher_query += f"MATCH (p)-[:HAS_FEATURE]->(f:Feature {{name: $feature}})\n"
+            params["feature"] = feature
 
         # Spec filter
         if spec:
@@ -273,16 +104,10 @@ MATCH (col:Collection {name: $category})<-[:BELONGS_TO_COLLECTION]-(p:Product)
             where_clauses.append("p.price_num <= $max_price")
             params["max_price"] = max_price
 
-        # Apply remaining tokens (like "7w") as text filters on the main query
-        if remaining_tokens:
-            for i, token in enumerate(remaining_tokens[:3]): # max 3 token filters
-                tok_param = f"rem_{i}"
-                params[tok_param] = token
-                where_clauses.append(
-                    f"(toLower(p.name) CONTAINS toLower(${tok_param}) "
-                    f"OR toLower(p.feature_descriptions) CONTAINS toLower(${tok_param}) "
-                    f"OR EXISTS {{ MATCH (p)-[:HAS_SPEC]->(s:Spec) WHERE toLower(s.value) CONTAINS toLower(${tok_param}) }})"
-                )
+        # Text matching on query if no structured params found
+        if query and not final_category and not use_case and not feature and not spec:
+            where_clauses.append("(toLower(p.name) CONTAINS toLower($query) OR toLower(p.feature_descriptions) CONTAINS toLower($query))")
+            params["query"] = query
 
         if where_clauses:
             cypher_query += "WHERE " + " AND ".join(where_clauses) + "\n"
