@@ -635,7 +635,8 @@ def get_tools():
             description=(
                 "Use this to fetch the list of available product categories from the database. "
                 "Call this when the user's request is extremely broad (e.g. 'show me products') "
-                "to find out what options exist before asking them a clarifying question."
+                "to find out what options exist before asking them a clarifying question. "
+                "Do NOT call this if you already know their preferred category from long-term memory."
             )
         ),
         StructuredTool.from_function(
