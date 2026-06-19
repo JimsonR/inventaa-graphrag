@@ -47,6 +47,13 @@ class AgentConfig:
         cls.graph = Neo4jGraph(url=NEO4J_URI, username=NEO4J_USERNAME, password=NEO4J_PASSWORD, refresh_schema=False)
         
         # 4. We defer vector store initialization to tools.py to prevent blocking startup
+        # However, we DO want to eagerly initialize Mem0 to load Spacy NLP models
+        # and prevent a 15 second cold start delay on the first user query.
+        try:
+            from src.services.agent.mem0_client import get_mem0_client
+            get_mem0_client()
+        except Exception as e:
+            logger.warning(f"Could not eagerly initialize Mem0 during startup: {e}")
 
         cls._initialized = True
         logger.info("AgentConfig initialized.")

@@ -108,6 +108,13 @@ _SEARCH_OVERRIDES = frozenset([
     "which lights should", "which light should",
 ])
 
+# Hard POLICY overrides: queries clearly asking for offers, deals, or policies
+_POLICY_OVERRIDES = frozenset([
+    "offer", "offers", "discount", "discounts", "promotion", "promotions",
+    "coupon", "coupons", "deal", "deals", "warranty", "return policy",
+    "shipping time", "delivery time"
+])
+
 # ─── Agentic Intent Classifier ────────────────────────────────────────────────
 
 class IntentClassification(BaseModel):
@@ -122,7 +129,7 @@ Classify the user's query into exactly ONE of the following intents:
 
 - "search" : Browsing, finding, recommending, or filtering products by budget/rating/type.
 - "detail" : Asking for specific specs (wattage, dimensions, warranty, material) of a product, OR asking a follow-up question (like "warranty", "price") about a product recently mentioned in the conversation context.
-- "policy" : General questions about shipping, delivery, returns, general warranty claims procedure, or bulk pricing/dealer rates.
+- "policy" : General questions about shipping, delivery, returns, general warranty claims procedure, bulk pricing/dealer rates, DISCOUNTS, OFFERS, or PROMOTIONS.
 - "advice" : Questions about installation, durability (waterproof, coastal, weather), or maintenance (NO named product).
 - "knowledge" : Educational concepts (what is IP rating/CRI/lumens), comparisons (LED vs solar, warm vs cool), or general buying guides.
 
@@ -139,6 +146,11 @@ def classify_intent(query: str, llm=None, history_context: str = "") -> str:
     if any(kw in q for kw in _SEARCH_OVERRIDES):
         logger.info(f"[Router] intent=search (fast-path override)  query={query!r}")
         return INTENT_SEARCH
+
+    # 1.5. Fast-Path: Explicit policy/offers queries
+    if any(kw in q for kw in _POLICY_OVERRIDES):
+        logger.info(f"[Router] intent=policy (fast-path override)  query={query!r}")
+        return INTENT_POLICY
 
     # 2. Agentic Classification
     if llm is None:

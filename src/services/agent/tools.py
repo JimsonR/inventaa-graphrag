@@ -659,6 +659,7 @@ def get_tools():
                 "shipping, delivery time, delivery charges, order tracking, return policy, "
                 "replacement process, exchange process, warranty claim procedure, "
                 "bulk pricing, dealer/distributor pricing, contractor rates, "
+                "discounts, offers, promotions, coupon codes, "
                 "damaged product on arrival, wrong item received, required documents for claims. "
                 "Do NOT use for product-specific specs or features."
             )
