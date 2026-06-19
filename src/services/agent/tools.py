@@ -298,34 +298,46 @@ def query_policies(query: str):
     tenant_id = tenant_context.get()
     filter_dict = {"tenant": tenant_id} if tenant_id else None
     
-    results = AgentConfig.policy_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
-    if not results:
-        if AgentConfig.general_vector_store is None:
-            NEO4J_URI = os.getenv("NEO4J_URI", "").replace("neo4j+s://", "neo4j+ssc://")
-            AgentConfig.general_vector_store = Neo4jVector.from_existing_index(
-                embedding=AgentConfig.embeddings, url=NEO4J_URI, 
-                username=os.getenv("NEO4J_USERNAME"), password=os.getenv("NEO4J_PASSWORD"),
-                index_name="inventaa_faq_vector", text_node_property="text"
+    from concurrent.futures import ThreadPoolExecutor
+    
+    def fetch_offers():
+        try:
+            from src.services.agent.context import tenant_context
+            tenant_id = tenant_context.get()
+            offer_res = AgentConfig.graph.query(
+                "MATCH (t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) WHERE (t.id = $tenant_id OR $tenant_id IS NULL) RETURN o.text AS text LIMIT 1",
+                params={"tenant_id": tenant_id}
             )
-        results = AgentConfig.general_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
+            if offer_res and offer_res[0].get("text"):
+                return offer_res[0]["text"] + "\n\n---\n"
+        except Exception as e:
+            logger.error(f"Error fetching global offers: {e}")
+        return ""
+
+    def fetch_vectors():
+        res = AgentConfig.policy_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
+        if not res:
+            if AgentConfig.general_vector_store is None:
+                NEO4J_URI = os.getenv("NEO4J_URI", "").replace("neo4j+s://", "neo4j+ssc://")
+                AgentConfig.general_vector_store = Neo4jVector.from_existing_index(
+                    embedding=AgentConfig.embeddings, url=NEO4J_URI, 
+                    username=os.getenv("NEO4J_USERNAME"), password=os.getenv("NEO4J_PASSWORD"),
+                    index_name="inventaa_faq_vector", text_node_property="text"
+                )
+            res = AgentConfig.general_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
+        return res
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        future_offers = executor.submit(fetch_offers)
+        future_vectors = executor.submit(fetch_vectors)
+        
+        global_offers_text = future_offers.result()
+        results = future_vectors.result()
+
     if not results:
-        return "No relevant policy found."
+        return global_offers_text + "No relevant policy found."
+        
     text = "\n\n".join([doc.page_content for doc, _ in results])
-
-    # Prepend Global Offers to context
-    global_offers_text = ""
-    try:
-        from src.services.agent.context import tenant_context
-        tenant_id = tenant_context.get()
-        offer_res = AgentConfig.graph.query(
-            "MATCH (t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) WHERE (t.id = $tenant_id OR $tenant_id IS NULL) RETURN o.text AS text LIMIT 1",
-            params={"tenant_id": tenant_id}
-        )
-        if offer_res and offer_res[0].get("text"):
-            global_offers_text = offer_res[0]["text"] + "\n\n---\n"
-    except Exception as e:
-        logger.error(f"Error fetching global offers: {e}")
-
     text = global_offers_text + text
 
     return text.encode("ascii", errors="ignore").decode("ascii")
@@ -382,10 +394,32 @@ def query_general_knowledge(query: str):
         filter_dict = {"tenant": tenant_id} if tenant_id else None
         
         logger.info(f"GeneralKnowledgeDatabase | vector_search={query!r}")
-        results = AgentConfig.general_vector_store.similarity_search_with_score(query, k=3, filter=filter_dict)
+        from concurrent.futures import ThreadPoolExecutor
+        
+        def fetch_offers():
+            try:
+                offer_res = AgentConfig.graph.query(
+                    "MATCH (t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) WHERE (t.id = $tenant_id OR $tenant_id IS NULL) RETURN o.text AS text LIMIT 1",
+                    params={"tenant_id": tenant_id}
+                )
+                if offer_res and offer_res[0].get("text"):
+                    return offer_res[0]["text"] + "\n\n---\n"
+            except Exception as e:
+                logger.error(f"Error fetching global offers: {e}")
+            return ""
+
+        def fetch_vectors():
+            return AgentConfig.general_vector_store.similarity_search_with_score(query, k=3, filter=filter_dict)
+            
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            future_offers = executor.submit(fetch_offers)
+            future_vectors = executor.submit(fetch_vectors)
+            
+            global_offers_text = future_offers.result()
+            results = future_vectors.result()
         
         if not results:
-            return "No relevant articles found."
+            return global_offers_text + "No relevant articles found."
             
         combined = []
         for doc, score in results:
@@ -397,23 +431,7 @@ def query_general_knowledge(query: str):
             if len(text) > 50:
                 combined.append(text[:1500])
                 
-        if not combined:
-            return "No relevant articles found."
-            
         output = "\n\n---\n".join(combined)
-
-        # Prepend Global Offers to context
-        global_offers_text = ""
-        try:
-            offer_res = AgentConfig.graph.query(
-                "MATCH (t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) WHERE (t.id = $tenant_id OR $tenant_id IS NULL) RETURN o.text AS text LIMIT 1",
-                params={"tenant_id": tenant_id}
-            )
-            if offer_res and offer_res[0].get("text"):
-                global_offers_text = offer_res[0]["text"] + "\n\n---\n"
-        except Exception as e:
-            logger.error(f"Error fetching global offers: {e}")
-
         output = global_offers_text + output
 
         return output.encode("ascii", errors="ignore").decode("ascii")
