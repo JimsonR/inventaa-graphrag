@@ -119,6 +119,8 @@ USECASE_KEYWORDS = {
 }
 
 FEATURE_KEYWORDS = {
+    "outdoor": "outdoor",
+    "indoor": "indoor",
     "solar": "solar-powered",
     "waterproof": "waterproof",
     "weatherproof": "waterproof",
