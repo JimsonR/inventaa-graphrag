@@ -48,9 +48,10 @@ INTENT_PROMPTS = {
         "Use SearchProductsDatabase to find products.\n"
         "Pass the user's natural language as the 'query' param. You could also incorporate any long-term user preferences or context provided to you if relevant. For example, if memory says the user prefers garden lights, you could set the `category` parameter to 'Bollard & Garden Lights' even if their current message is broad like 'show outdoor lights'.\n"
         "Use max_price for budget limits. Use sort_by for cheapest/best-rated.\n"
-        "Available categories: Gate & Pillar Lights | Solar Lights | Outdoor Wall Lights | "
-        "Bollard & Garden Lights | Street Lights | Flood Lights | Indoor & Ceiling Lights | "
-        "Panel Lights | Pathway & Step Lights | Bulkhead Lights | Divine & Temple Lights | General Purpose Lights"
+        "Available categories (collections): 3 in 1 gate light | Divine Light For Home Entrance | "
+        "Indoor Commercial Lights | Indoor Domestic Lights | LED Outdoor Wall Light | "
+        "Outdoor Commercial Lights | Outdoor Garden Bollard Light | Outdoor LED Gate Lamp Lights | "
+        "Outdoor LED Solar Powered Garden Or Street Light Online"
     ),
     INTENT_DETAIL: (
         _BASE_RULE +

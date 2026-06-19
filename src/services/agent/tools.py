@@ -28,60 +28,55 @@ logger = logging.getLogger(__name__)
 
 CATEGORY_KEYWORDS = {
     # Gate & Pillar
-    "gate": "Gate & Pillar Lights",
-    "pillar": "Gate & Pillar Lights",
-    "post": "Gate & Pillar Lights",
-    "compound": "Gate & Pillar Lights",
-    "entrance": "Gate & Pillar Lights",
-    "boundary": "Gate & Pillar Lights",
-    # Solar
-    "solar": "Solar Lights",
+    "gate": "Outdoor LED Gate Lamp Lights",
+    "pillar": "Outdoor LED Gate Lamp Lights",
+    "post": "Outdoor LED Gate Lamp Lights",
+    "compound": "Outdoor LED Gate Lamp Lights",
+    "entrance": "Outdoor LED Gate Lamp Lights",
+    "boundary": "Outdoor LED Gate Lamp Lights",
+    # Solar / Street
+    "solar": "Outdoor LED Solar Powered Garden Or Street Light Online",
+    "street": "Outdoor LED Solar Powered Garden Or Street Light Online",
+    "road": "Outdoor LED Solar Powered Garden Or Street Light Online",
+    "parking": "Outdoor LED Solar Powered Garden Or Street Light Online",
     # Outdoor Wall
-    "wall": "Outdoor Wall Lights",
-    "sconce": "Outdoor Wall Lights",
-    "elevation": "Outdoor Wall Lights",
+    "wall": "LED Outdoor Wall Light",
+    "sconce": "LED Outdoor Wall Light",
+    "elevation": "LED Outdoor Wall Light",
     # Bollard & Garden
-    "bollard": "Bollard & Garden Lights",
-    "garden": "Bollard & Garden Lights",
-    "lawn": "Bollard & Garden Lights",
-    "landscape": "Bollard & Garden Lights",
-    "driveway": "Bollard & Garden Lights",
-    "yard": "Bollard & Garden Lights",
-    "terrace": "Bollard & Garden Lights",
-    "balcony": "Bollard & Garden Lights",
-    "resort": "Bollard & Garden Lights",
-    "hotel": "Bollard & Garden Lights",
-    "villa": "Bollard & Garden Lights",
-    "community": "Bollard & Garden Lights",
-    # Street
-    "street": "Street Lights",
-    "road": "Street Lights",
-    "parking": "Street Lights",
-    # Flood
-    "flood": "Flood Lights",
-    "stadium": "Flood Lights",
-    # Indoor & Ceiling
-    "indoor": "Indoor & Ceiling Lights",
-    "ceiling": "Indoor & Ceiling Lights",
-    "downlight": "Indoor & Ceiling Lights",
-    # Panel
-    "panel": "Panel Lights",
-    # Pathway & Step
-    "pathway": "Pathway & Step Lights",
-    "step": "Pathway & Step Lights",
-    "stairway": "Pathway & Step Lights",
-    "walkway": "Pathway & Step Lights",
-    "stair": "Pathway & Step Lights",
-    # Bulkhead
-    "bulkhead": "Bulkhead Lights",
+    "bollard": "Outdoor Garden Bollard Light",
+    "garden": "Outdoor Garden Bollard Light",
+    "lawn": "Outdoor Garden Bollard Light",
+    "landscape": "Outdoor Garden Bollard Light",
+    "driveway": "Outdoor Garden Bollard Light",
+    "yard": "Outdoor Garden Bollard Light",
+    "terrace": "Outdoor Garden Bollard Light",
+    "balcony": "Outdoor Garden Bollard Light",
+    "resort": "Outdoor Garden Bollard Light",
+    "hotel": "Outdoor Garden Bollard Light",
+    "villa": "Outdoor Garden Bollard Light",
+    "community": "Outdoor Garden Bollard Light",
+    # Commercial / Flood / Pathway
+    "flood": "Outdoor Commercial Lights",
+    "stadium": "Outdoor Commercial Lights",
+    "pathway": "Outdoor Commercial Lights",
+    "step": "Outdoor Commercial Lights",
+    "stairway": "Outdoor Commercial Lights",
+    "walkway": "Outdoor Commercial Lights",
+    "stair": "Outdoor Commercial Lights",
+    "bulkhead": "Outdoor Commercial Lights",
+    "general": "Outdoor Commercial Lights",
+    # Indoor
+    "indoor": "Indoor Domestic Lights",
+    "ceiling": "Indoor Domestic Lights",
+    "downlight": "Indoor Domestic Lights",
+    "panel": "Indoor Domestic Lights",
     # Divine & Temple
-    "divine": "Divine & Temple Lights",
-    "temple": "Divine & Temple Lights",
-    "religious": "Divine & Temple Lights",
-    "god": "Divine & Temple Lights",
-    "pooja": "Divine & Temple Lights",
-    # General
-    "general": "General Purpose Lights",
+    "divine": "Divine Light For Home Entrance",
+    "temple": "Divine Light For Home Entrance",
+    "religious": "Divine Light For Home Entrance",
+    "god": "Divine Light For Home Entrance",
+    "pooja": "Divine Light For Home Entrance",
 }
 
 USECASE_KEYWORDS = {
@@ -228,10 +223,10 @@ def search_products_db(
                     f"| auto_usecase={auto_usecase!r} | auto_features={auto_features} "
                     f"| remaining_tokens={remaining_tokens}")
 
-        # Build Cypher: start from Category for maximum precision when category is known
+        # Build Cypher: start from Collection for maximum precision when category is known
         if final_category:
             cypher_query = """
-MATCH (cat:Category {name: $category})-[:HAS_PRODUCT]->(p:Product)
+MATCH (col:Collection {name: $category})<-[:BELONGS_TO_COLLECTION]-(p:Product)
 """
             params["category"] = final_category
         else:
@@ -460,8 +455,6 @@ def get_categories_db(*args, **kwargs):
         cols = [r["collection"] for r in col_res] if col_res else []
         
         output = []
-        if cats:
-            output.append("Available Categories: " + ", ".join(cats))
         if cols:
             output.append("Available Collections: " + ", ".join(cols))
             
@@ -616,10 +609,11 @@ def get_tools():
                 "\n\nParameters:"
                 "\n- query (str): natural language query. Examples: 'indoor ceiling lights', 'solar gate lights', "
                 "'garden bollard', 'waterproof outdoor lights', 'driveway lights', 'landscape lights for villa'"
-                "\n- category (str): explicit category override, one of: "
-                "'Gate & Pillar Lights', 'Solar Lights', 'Outdoor Wall Lights', 'Bollard & Garden Lights', "
-                "'Street Lights', 'Flood Lights', 'Indoor & Ceiling Lights', 'Panel Lights', "
-                "'Pathway & Step Lights', 'Bulkhead Lights', 'Divine & Temple Lights', 'General Purpose Lights'"
+                "\n- category (str): explicit collection override, one of: "
+                "'3 in 1 gate light', 'Divine Light For Home Entrance', 'Indoor Commercial Lights', "
+                "'Indoor Domestic Lights', 'LED Outdoor Wall Light', 'Outdoor Commercial Lights', "
+                "'Outdoor Garden Bollard Light', 'Outdoor LED Gate Lamp Lights', "
+                "'Outdoor LED Solar Powered Garden Or Street Light Online'"
                 "\n- collection (str): filter by collection name. Available collections: '3 in 1 gate light', 'Divine Light For Home Entrance', 'Indoor Commercial Lights', 'Indoor Domestic Lights', 'LED Outdoor Wall Light', 'Outdoor Commercial Lights', 'Outdoor Garden Bollard Light', 'Outdoor LED Gate Lamp Lights', 'Outdoor LED Solar Powered Garden Or Street Light Online'"
                 "\n- feature (str): one of: solar-powered, waterproof, IP65-rated, IP66-rated, motion-sensor, "
                 "dimmable, warm-white, cool-white, neutral-white, 3-in-1-colour, aluminium-body, "
