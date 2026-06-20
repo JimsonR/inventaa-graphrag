@@ -59,7 +59,18 @@ def build_graph(system_prompt: str, tools: list):
             if isinstance(msg, ToolMessage):
                 capture_logger.info(f"Tool '{msg.name}' returned output (length {len(msg.content)})")
                 if msg.name == "SearchProductsDatabase":
-                    last_product_result = msg.content
+                    # If the tool returned a needs_clarification response,
+                    # DON'T set it as product result — let the agent
+                    # synthesize it into a conversational reply.
+                    try:
+                        parsed = json.loads(msg.content)
+                        if isinstance(parsed, dict) and parsed.get("needs_clarification"):
+                            capture_logger.info("Tool returned needs_clarification — routing to agent for synthesis.")
+                            last_product_result = None
+                        else:
+                            last_product_result = msg.content
+                    except (json.JSONDecodeError, TypeError):
+                        last_product_result = msg.content
                 break
         return {"last_product_search_result": last_product_result}
 
@@ -156,6 +167,14 @@ If in doubt, output "VALID"."""
         last_msg = state["messages"][-1]
         # If we just searched for products, bypass the Agent and go straight to the Judge
         if isinstance(last_msg, ToolMessage) and last_msg.name == "SearchProductsDatabase":
+            # EXCEPT when the tool returned needs_clarification — route to agent
+            # so it can synthesize a conversational "which collection?" reply.
+            try:
+                parsed = json.loads(last_msg.content)
+                if isinstance(parsed, dict) and parsed.get("needs_clarification"):
+                    return "agent"
+            except (json.JSONDecodeError, TypeError):
+                pass
             return "judge"
         # For policy/faq tools, go to Agent to synthesize text
         return "agent"

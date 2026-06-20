@@ -75,11 +75,26 @@ def search_products_db(
             _STOP = {
                 "led", "light", "lights", "lamp", "lamps", "the", "a", "an", "and", "or", "for", "of", "in", "with", 
                 "by", "from", "lighting", "offers", "offer", "discount", "discounts", "sale", "deal", "deals", 
-                "best", "top", "cheap", "cheapest", "buy", "show", "me", "any", "on", "indoor", "outdoor"
+                "best", "top", "cheap", "cheapest", "buy", "show", "me", "any", "on", "indoor", "outdoor",
+                "product", "products"
             }
             raw = [t.strip(".,?!-–—/|") for t in query.split()]
             good_tokens = [t.lower() for t in raw if t and len(t) > 2 and t.lower() not in _STOP]
             
+            # ── Broad Query Defense ──────────────────────────────────────────────
+            # If ALL tokens were stripped (query was entirely generic like
+            # "show me products"), AND no category/collection filter was provided,
+            # return a needs_clarification response instead of doing a blind
+            # MATCH (p:Product) that returns everything or a broken Lucene search.
+            if not good_tokens and not category and not collection:
+                available = AgentConfig.collections if AgentConfig.collections else []
+                logger.info(f"[BroadQueryDefense] All tokens stripped from query={query!r}. Returning needs_clarification.")
+                return json.dumps({
+                    "needs_clarification": True,
+                    "message": "The query is too broad. Please ask the user which specific collection they'd like to browse.",
+                    "available_collections": available
+                })
+
             if good_tokens:
                 # Use prefix matching instead of fuzzy to prevent 'indoor' from matching 'door' or 'outdoor'
                 lucene_query = " AND ".join([t + "*" for t in good_tokens])
@@ -155,6 +170,18 @@ RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
         res = AgentConfig.graph.query(cypher_query, params=params)
 
         if not res:
+            # ── Fulltext Fallback ─────────────────────────────────────────
+            # Lucene matched 0 products. If we had a lucene_query, the tokens
+            # may have been valid but not in any product *name*. Fall back to
+            # asking for clarification rather than silently returning empty.
+            if "lucene_query" in params and not category and not collection:
+                available = AgentConfig.collections if AgentConfig.collections else []
+                logger.info(f"[FulltextFallback] Lucene query={params['lucene_query']!r} returned 0 results. Returning needs_clarification.")
+                return json.dumps({
+                    "needs_clarification": True,
+                    "message": f"No products matched '{query}'. Please ask the user to pick a specific collection.",
+                    "available_collections": available
+                })
             return "[]"
 
         # Graph-driven routing logic
