@@ -269,6 +269,25 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                     query_embedding = future_embedding.result()
                     long_term_context = future_mem0.result()
 
+            # ─── Pre-Processor: Deterministic Routing ────────────────────────────
+            if intent == "search":
+                from src.services.agent.preprocessor import preprocess_search
+                decision = preprocess_search(query_text, AgentConfig.collections)
+                
+                if decision["action"] == "clarify":
+                    cols = decision["collections"]
+                    reply = "Could you please specify which type you're interested in?\n\n"
+                    reply += "\n".join(f"• {c}" for c in cols)
+                    logger.info("Pre-processor intercepted broad query. Returning clarification directly.")
+                    return reply
+                
+                if decision.get("category"):
+                    system_prompt += (f"\n\nIMPORTANT: The user's query perfectly maps to the "
+                                      f"'{decision['category']}' collection. You MUST pass "
+                                      f"category='{decision['category']}' to SearchProductsDatabase.")
+                    logger.info(f"Pre-processor resolved category to: {decision['category']}")
+            # ─────────────────────────────────────────────────────────────────────
+
             # ─── Semantic Cache: Lookup ──────────────────────────────────────────
             cache_threshold = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.95"))
             cache_ttl = int(os.getenv("CACHE_TTL_SECONDS", "86400"))  # 24 hours
@@ -290,6 +309,18 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
             # ─── End Cache Lookup ────────────────────────────────────────────────
             
             executor_graph = build_graph(system_prompt, active_tools)
+            
+            # ─── Per-Intent Context Slimming ─────────────────────────────────────────
+            # Reduce token overload by stripping irrelevant context before injection
+            if intent in ("policy", "advice", "knowledge"):
+                long_term_context = ""
+                history = []
+            elif intent == "detail":
+                long_term_context = ""
+                history = history[-1:] if history else []
+            elif intent == "search":
+                history = history[-2:] if len(history) >= 2 else history
+            # ─────────────────────────────────────────────────────────────────────────
             
             if long_term_context:
                 logger.info(f"Injected long term context for user {user_id}")
