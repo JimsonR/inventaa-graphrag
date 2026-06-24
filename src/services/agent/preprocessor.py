@@ -34,7 +34,7 @@ def preprocess_search(query: str, collections: list[str]) -> dict:
     if not meaningful_query_tokens:
         return {"action": "clarify", "collections": collections}
     
-    best_match = None
+    best_matches = []
     best_score = 0
     
     # Case 2: Token-level overlap match
@@ -52,11 +52,18 @@ def preprocess_search(query: str, collections: list[str]) -> dict:
             score = len(intersection) / len(meaningful_col_tokens)
             if score > best_score:
                 best_score = score
-                best_match = col
+                best_matches = [col]
+            elif score == best_score:
+                best_matches.append(col)
                 
     # If the user perfectly hit some collection keywords (score >= 0.5 means at least half of the collection's unique keywords matched)
     if best_score >= 0.5:
-        return {"action": "search", "category": best_match}
+        if len(best_matches) == 1:
+            return {"action": "search", "category": best_matches[0]}
+        else:
+            # It tied across multiple collections (e.g. "outdoor" matches "Outdoor Wall" and "Outdoor Commercial" equally)
+            # We want to clarify among the tied matches!
+            return {"action": "clarify", "collections": best_matches}
     
     # Case 3: Umbrella term mapping (Fallback if strict intersection failed)
     matching = [c for c in collections if any(t in c.lower() for t in meaningful_query_tokens)]
