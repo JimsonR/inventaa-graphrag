@@ -19,36 +19,47 @@ def preprocess_search(query: str, collections: list[str]) -> dict:
     """
     # Remove punctuation
     cleaned_query = re.sub(r'[^\w\s]', '', query)
-    tokens = [t.lower().strip() for t in cleaned_query.split()]
+    query_tokens = set([t.lower().strip() for t in cleaned_query.split()])
     
     # Meaningful tokens are those not in the noise list and length > 2
-    meaningful = [t for t in tokens if t not in _NOISE and len(t) > 2]
-    cleaned_meaningful = " ".join(meaningful)
+    meaningful_query_tokens = {t for t in query_tokens if t not in _NOISE and len(t) > 2}
     
+    _NEGATION = {"not", "except", "other", "besides", "without", "no", "non"}
+    if any(t in _NEGATION for t in query_tokens):
+        # Negation requires semantic reasoning that fuzzy matching cannot do.
+        # Fall back to the LLM immediately so it doesn't force the excluded category.
+        return {"action": "search", "category": None}
+        
     # Case 1: All noise -> too broad
-    if not meaningful:
+    if not meaningful_query_tokens:
         return {"action": "clarify", "collections": collections}
     
-    # Case 2: Exact/fuzzy match against a collection name
-    best_match, best_score = None, 0
+    best_match = None
+    best_score = 0
+    
+    # Case 2: Token-level overlap match
     for col in collections:
-        # Score against the full cleaned query (in case noise words are part of collection name)
-        score_full = SequenceMatcher(None, cleaned_query.lower(), col.lower()).ratio()
-        # Score against only meaningful words
-        score_meaningful = SequenceMatcher(None, cleaned_meaningful, col.lower()).ratio()
+        col_tokens = set([t.lower().strip() for t in re.sub(r'[^\w\s]', '', col).split()])
+        meaningful_col_tokens = {t for t in col_tokens if t not in _NOISE and len(t) > 2}
         
-        score = max(score_full, score_meaningful)
-        if score > best_score:
-            best_score = score
-            best_match = col
+        if not meaningful_col_tokens:
+            continue
             
-    # Empirically, 0.55 is a decent threshold for fuzzy matching short strings
-    if best_score >= 0.55:
+        intersection = meaningful_query_tokens.intersection(meaningful_col_tokens)
+        
+        if intersection:
+            # Score is based on how much of the collection's core keywords were matched
+            score = len(intersection) / len(meaningful_col_tokens)
+            if score > best_score:
+                best_score = score
+                best_match = col
+                
+    # If the user perfectly hit some collection keywords (score >= 0.5 means at least half of the collection's unique keywords matched)
+    if best_score >= 0.5:
         return {"action": "search", "category": best_match}
     
-    # Case 3: Umbrella term -> filter matching collections
-    # e.g., "indoor" matches "Indoor Commercial" and "Indoor Domestic"
-    matching = [c for c in collections if any(t in c.lower() for t in meaningful)]
+    # Case 3: Umbrella term mapping (Fallback if strict intersection failed)
+    matching = [c for c in collections if any(t in c.lower() for t in meaningful_query_tokens)]
     
     if len(matching) > 1:
         return {"action": "clarify", "collections": matching}

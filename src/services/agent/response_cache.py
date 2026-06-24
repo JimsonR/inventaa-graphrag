@@ -44,7 +44,7 @@ def cache_lookup(
     embedding: list,
     tenant_id: str,
     intent: str,
-    threshold: float = 0.95,
+    threshold: float = 0.99,
     skip_intents: list = None,
 ) -> Optional[dict]:
     """

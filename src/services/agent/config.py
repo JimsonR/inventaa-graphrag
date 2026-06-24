@@ -78,7 +78,12 @@ class AgentConfig:
                 cls.features = sorted(row.get("feats", []))
             
             logger.info(f"Loaded schema dynamically: {len(cls.collections)} Collections, {len(cls.use_cases)} UseCases, {len(cls.features)} Features")
+            
+            # 6. Sync taxonomy to vector database for semantic parameter mapping
+            from src.services.agent.taxonomy import sync_taxonomy
+            sync_taxonomy()
+            
         except Exception as e:
-            logger.error(f"Failed to fetch dynamic graph schema: {e}")
+            logger.error(f"Failed to fetch dynamic schema: {e}", exc_info=True)
 
         logger.info("AgentConfig initialized.")

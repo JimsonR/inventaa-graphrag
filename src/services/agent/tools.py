@@ -108,15 +108,18 @@ def search_products_db(
         # ─── 2. Structural Graph Matching ───────────────────────────────────────
         target_col = category or collection
         if target_col:
-            cypher_query += "MATCH (p)-[:BELONGS_TO_COLLECTION]->(c:Collection {name: $collection})\n"
+            cypher_query += "MATCH (p)-[:BELONGS_TO_COLLECTION]->(c:Collection)\n"
+            where_clauses.append("toLower(c.name) = toLower($collection)")
             params["collection"] = target_col
             
         if feature:
-            cypher_query += "MATCH (p)-[:HAS_FEATURE]->(f:Feature {name: $feature})\n"
+            cypher_query += "MATCH (p)-[:HAS_FEATURE]->(f:Feature)\n"
+            where_clauses.append("toLower(f.name) = toLower($feature)")
             params["feature"] = feature
             
         if use_case:
-            cypher_query += "MATCH (p)-[:SUITABLE_FOR]->(u:UseCase {name: $use_case})\n"
+            cypher_query += "MATCH (p)-[:SUITABLE_FOR]->(u:UseCase)\n"
+            where_clauses.append("toLower(u.name) = toLower($use_case)")
             params["use_case"] = use_case
 
         # ─── 3. Add Technical Spec filter if provided ───────────────────────────
@@ -137,6 +140,7 @@ def search_products_db(
             cypher_query += "WHERE " + " AND ".join(where_clauses) + "\n"
 
         # Sort
+        sort_by_lower = (sort_by or "").lower()
         sort_map = {
             "price_asc": "ORDER BY p.price_num ASC",
             "price_low": "ORDER BY p.price_num ASC",
@@ -147,12 +151,13 @@ def search_products_db(
             "reviews_desc": "ORDER BY p.review_count DESC",
             "relevance": "ORDER BY score DESC"
         }
-        order_clause = sort_map.get((sort_by or "").lower(), "")
-        if not order_clause:
+        # We handle wattage_asc and wattage_desc in Python after the query
+        order_clause = sort_map.get(sort_by_lower, "")
+        if not order_clause and "wattage" not in sort_by_lower:
             order_clause = "ORDER BY score DESC, p.rating_score DESC" if "lucene_query" in params else "ORDER BY p.rating_score DESC"
 
         cypher_query += f"""
-WITH p
+WITH p{", score" if "lucene_query" in params else ""}
 {order_clause}
 LIMIT $limit
 RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
@@ -162,12 +167,45 @@ RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
        p.installation_url AS installation_url,
        [(p)-[:HAS_WARRANTY]->(w:Warranty) | w.description][0] AS warranty,
        [(p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'replacement' OR toLower(pol.title) CONTAINS 'exchange' | pol.content][0] AS replacement_exchange_policy,
+       [(p)-[:HAS_SPEC]->(s:Spec) WHERE toLower(s.key) CONTAINS 'watt' OR toLower(s.key) CONTAINS 'power' | s.value] AS wattages,
        [(p)-[:BELONGS_TO_COLLECTION]->(col2:Collection) | col2.name] AS collections,
        [(p)-[:BELONGS_TO_TENANT]->(t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) | o.text][0] AS global_offers
 """
 
         logger.info(f"SearchProductsDatabase Cypher:\n{cypher_query.strip()}\nParams: {params}")
         res = AgentConfig.graph.query(cypher_query, params=params)
+
+        # ── Query Relaxation 1: AND to OR ─────────────────────────────────────────
+        if not res and "lucene_query" in params and " AND " in params["lucene_query"]:
+            relaxed_lucene = params["lucene_query"].replace(" AND ", " OR ")
+            logger.info(f"[QueryRelaxation] 0 results for AND. Relaxing to OR query: {relaxed_lucene}")
+            params["lucene_query"] = relaxed_lucene
+            res = AgentConfig.graph.query(cypher_query, params=params)
+            
+        # ── Query Relaxation 2: Drop Lucene entirely if structural filters exist ──
+        if not res and "lucene_query" in params and (category or collection or feature or use_case or spec):
+            logger.info(f"[QueryRelaxation] 0 results for OR. Dropping full-text query entirely since structural filters exist.")
+            # Remove the lucene query from the cypher string
+            relaxed_cypher = cypher_query.replace('CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score\n', 'MATCH (p:Product)\n')
+            # Remove score from the WITH clause
+            relaxed_cypher = relaxed_cypher.replace('WITH p, score', 'WITH p')
+            # Remove score from the ORDER BY clause if present
+            relaxed_cypher = relaxed_cypher.replace('score DESC, ', '')
+            relaxed_cypher = relaxed_cypher.replace('ORDER BY score DESC', 'ORDER BY p.rating_score DESC')
+            
+            res = AgentConfig.graph.query(relaxed_cypher, params=params)
+            
+        import re
+        if res and "wattage" in (sort_by or "").lower():
+            def extract_wattage(row):
+                wattages = row.get("wattages") or []
+                if not wattages:
+                    return float('inf') if "asc" in (sort_by or "").lower() else float('-inf')
+                match = re.search(r'(\d+(?:\.\d+)?)', wattages[0])
+                if match:
+                    return float(match.group(1))
+                return float('inf') if "asc" in (sort_by or "").lower() else float('-inf')
+            res.sort(key=extract_wattage, reverse="desc" in (sort_by or "").lower())
 
         if not res:
             # ── Fulltext Fallback ─────────────────────────────────────────
@@ -192,13 +230,12 @@ RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
         
         # Intercept if the query matches products across multiple distinct collections and is large
         if len(all_collections) > 2 and len(res) >= 10 and not category and not collection:
-            lines = [
-                "I found many products matching your request across several different collections.",
-                "Could you please specify which type of light you're looking for?"
-            ]
-            for c in sorted(list(all_collections)):
-                lines.append(f"• {c}")
-            return "\n".join(lines)
+            logger.info(f"[MultiCollectionFallback] Query matched {len(res)} products across {len(all_collections)} collections. Returning needs_clarification.")
+            return json.dumps({
+                "needs_clarification": True,
+                "message": "I found many products matching your request across several different collections. Could you please specify which type of light you're looking for?",
+                "available_collections": sorted(list(all_collections))
+            })
 
         return json.dumps(res, indent=2, ensure_ascii=False)
 
@@ -471,9 +508,6 @@ def query_general_knowledge(query: str):
 
 
 def get_tools():
-    cols_str = "', '".join(AgentConfig.collections) if AgentConfig.collections else "Solar Lights"
-    feats_str = ", ".join(AgentConfig.features) if AgentConfig.features else "solar-powered"
-    
     return [
         StructuredTool.from_function(
             name="SearchProductsDatabase",
@@ -482,25 +516,24 @@ def get_tools():
                 "Search, list, filter, or get product recommendations from the graph database. "
                 "Use this for: product listings, budget-based queries, application-based recommendations, "
                 "comparison queries (e.g. warm vs cool white), or any query that requires showing multiple products. "
-                "The tool auto-detects category, use case, and features from the query. If the user's long-term memory or context specifies a preference (like a specific category), you could explicitly set the corresponding parameter (e.g. `category` or `feature`) rather than relying purely on the current conversational text."
+                "The tool auto-detects category, use case, and features from the query. If the user's long-term memory or context specifies a preference (like a specific category), you could explicitly set the corresponding parameter (e.g. `category` or `feature`) rather than relying purely on the current conversational text. "
+                "CRITICAL: If the user asks to search 'in all collections' or 'across all categories', DO NOT call this tool multiple times. Simply call it ONCE with `category=None` and `collection=None`."
                 "\n\nParameters:"
-                "\n- query (str): natural language query. Examples: 'indoor ceiling lights', 'solar gate lights', "
-                "'garden bollard', 'waterproof outdoor lights', 'driveway lights', 'landscape lights for villa'"
-                f"\n- category (str): explicit collection override, one of: '{cols_str}'"
-                f"\n- collection (str): filter by collection name. Available collections: '{cols_str}'"
-                f"\n- feature (str): one of: {feats_str}"
+                "\n- query (str): ONLY use this for exact PROPER NOUNS representing specific product names or brands (e.g. 'oxana', 'fabra'). DO NOT pass generic words, locations, applications, or features here (like 'pathway', 'walkway', 'garden', 'indoor', 'waterproof'). If you have a generic term, use the `feature` or `use_case` parameters instead and LEAVE THIS EMPTY."
+                "\n- category (str): explicit collection override."
+                "\n- collection (str): filter by collection name."
+                f"\n- feature (str): explicit filter for a physical feature. Valid options: {', '.join(AgentConfig.features) if AgentConfig.features else 'waterproof, dimmable'}."
+                f"\n- use_case (str): explicit filter for where the light will be used. Valid options: {', '.join(AgentConfig.use_cases) if AgentConfig.use_cases else 'Garden, Exterior'}."
                 "\n- spec (str): technical spec filter. Examples: 'IP65', '12W', '18W', 'aluminium', 'beam angle'"
                 "\n- min_price / max_price (int): price range in INR (e.g. max_price=10000 for '₹10,000 budget')"
-                "\n- sort_by (str): rating_desc, rating_asc, price_asc, price_desc, reviews_desc"
+                "\n- sort_by (str): rating_desc, rating_asc, price_asc, price_desc, reviews_desc, wattage_asc, wattage_desc"
                 "\n- limit (int): number of results (default 100)"
                 "\n\nEXAMPLES:"
-                "\n- 'show me indoor lights' → query='indoor lights'"
-                "\n- 'cheapest solar gate light' → query='solar gate', sort_by='price_asc'"
-                "\n- 'best rated panel lights' → query='panel lights', sort_by='rating_desc'"
-                "\n- 'lights for garden under ₹2000' → query='garden', max_price=2000"
-                "\n- 'waterproof outdoor lights with warm white' → query='outdoor warm waterproof'"
-                "\n- 'lights for a villa entrance and driveway' → query='gate driveway entrance'"
-                "\n- 'recommend lights for a hotel landscape' → query='landscape garden bollard'"
+                "\n- 'show me waterproof lights for the garden' → query=None, feature='Waterproof', use_case='Garden'"
+                "\n- 'low electricity exterior lights' → query=None, use_case='Exterior', sort_by='wattage_asc'"
+                "\n- 'cheapest solar gate light' → query=None, category='Solar Lights', use_case='Gate-Pillar', sort_by='price_asc'"
+                "\n- 'lights for garden under ₹2000' → query=None, use_case='Garden', max_price=2000"
+                "\n- 'oxana wall light' → query='oxana', category='LED Outdoor Wall Light', use_case=None"
                 "\n- 'lights under ₹10000' → max_price=10000, sort_by='rating_desc'"
                 "\n- 'IP65 rated street lights' → query='street', spec='IP65'"
                 "\n- 'lights for heavy rainfall area' → feature='waterproof'"

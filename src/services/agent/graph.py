@@ -245,8 +245,8 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                 with track_time("Task: History & Intent", custom_logger=task_logger):
                     history = get_recent_messages(session_id=session_id, exclude_message_id=message_id, limit=5)
                     history_text = "\n".join([f"{'User' if isinstance(m, HumanMessage) else 'Agent'}: {m.content}" for m in history[-2:]])
-                    sys_prompt, active_tools, intent = get_intent_config(query_text, all_tools, llm=AgentConfig.llm, history_context=history_text)
-                    return history, sys_prompt, active_tools, intent
+                    sys_prompt, active_tools, intent, translation = get_intent_config(query_text, all_tools, llm=AgentConfig.llm, history_context=history_text)
+                    return history, sys_prompt, active_tools, intent, translation
 
             def task_embedding():
                 from src.services.agent.utils import track_time
@@ -259,15 +259,29 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                     return fetch_long_term_context(query_text, user_id)
 
             from src.services.agent.utils import track_time
-            with track_time("Total Parallel Pre-computation", custom_logger=task_logger):
+            with track_time("Total Pre-computation Phase 1", custom_logger=task_logger):
                 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                     future_intent = executor.submit(task_history_and_intent)
                     future_embedding = executor.submit(task_embedding)
                     future_mem0 = executor.submit(task_mem0)
 
-                    history, system_prompt, active_tools, intent = future_intent.result()
+                    history, system_prompt, active_tools, intent, translation = future_intent.result()
                     query_embedding = future_embedding.result()
                     long_term_context = future_mem0.result()
+
+            with track_time("Total Pre-computation Phase 2 (Taxonomy Match)", custom_logger=task_logger):
+                # We embed the translation purely for cross-lingual taxonomy matching
+                translation_embedding = AgentConfig.embeddings.embed_query(translation)
+                
+                # Extract taxonomy tags via vector similarity
+                from src.services.agent.taxonomy import extract_taxonomy
+                taxonomy_tags = extract_taxonomy(translation_embedding)
+                
+                if taxonomy_tags and "SearchProductsDatabase" in [t.name for t in active_tools]:
+                    tags_str = ", ".join([f"{k}='{v}'" for k, v in taxonomy_tags.items()])
+                    system_prompt += (f"\n\nSystem: The Vector Database suggests the following exact database tags might be relevant to the user's query: {tags_str}. "
+                                      f"CRITICAL: Analyze the user's query. If the user is explicitly EXCLUDING or NEGATING a feature (e.g. 'not waterproof'), ignore that tag. "
+                                      f"Otherwise, you MUST use these exact tags when calling the SearchProducts tool.")
 
             # ─── Pre-Processor: Deterministic Routing ────────────────────────────
             if intent == "search":
@@ -289,7 +303,7 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
             # ─────────────────────────────────────────────────────────────────────
 
             # ─── Semantic Cache: Lookup ──────────────────────────────────────────
-            cache_threshold = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.95"))
+            cache_threshold = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.99"))
             cache_ttl = int(os.getenv("CACHE_TTL_SECONDS", "86400"))  # 24 hours
             cache_skip = ["detail", "search", "policy"]  # product, detail, and policy lookups should always be fresh
             

@@ -42,7 +42,8 @@ _BASE_RULE = (
     "3. NEVER hallucinate product names, prices, specs, or policies.\n"
     "4. CRITICAL: NEVER manually list or type out product options as text. If you need to recommend or show products, you MUST call the `SearchProductsDatabase` tool so the UI can render them with images. Do not summarize products from conversation history into text.\n"
     "5. When answering questions about policies, offers, or discounts, you MUST explicitly list out the exact percentages, tiers, and details provided by the tool. Do not just summarize that they exist.\n"
-    "6. If the tool returns store-wide or generic discounts (e.g. 'Extra 5% OFF on Rs 7500'), state those exact tiers. NEVER invent a specific percentage discount (like '50% off') for a product category if the tool does not explicitly state it.\n\n"
+    "6. If the tool returns store-wide or generic discounts (e.g. 'Extra 5% OFF on Rs 7500'), state those exact tiers. NEVER invent a specific percentage discount (like '50% off') for a product category if the tool does not explicitly state it.\n"
+    "7. ALWAYS respond in the exact same language that the user used in their original query. Do NOT reply in English if the user asked in another language.\n\n"
 )
 
 
@@ -55,9 +56,11 @@ def get_intent_prompts():
             _BASE_RULE +
             "Use SearchProductsDatabase to find products.\\n"
             "Pass the user's natural language as the 'query' param. "
-            "If the user asks for a broad term (like 'indoor' or 'outdoor') that conceptually matches multiple different collections, DO NOT guess and DO NOT call the tool. Instead, reply directly asking them to clarify which specific collection they want (list the matching ones as bullet points).\\n"
-            "CRITICAL EXCEPTION: If the user's query exactly or nearly exactly matches ONE collection name (e.g., 'solar lights' matches 'Solar Lights', or 'gate light' matches 'Outdoor LED Gate Lamp Lights'), DO NOT ask for clarification. Immediately call SearchProductsDatabase and pass that collection name to the `category` param.\\n"
-            "If you do call the tool, you could incorporate long-term preferences. Use max_price for budget limits.\\n"
+            "If the user asks for a broad term (like 'indoor' or 'outdoor') that conceptually matches multiple different collections, DO NOT guess and DO NOT call the tool. Instead, reply directly asking them to clarify which specific collection they want.\\n"
+            "CRITICAL EXCEPTIONS to the broad term rule:\\n"
+            "1. If the user's query exactly or nearly exactly matches ONE collection name (e.g., 'solar lights' matches 'Solar Lights'), IMMEDIATELY call the tool and pass that collection name to the `category` param.\\n"
+            "2. If the user specifies a distinct FEATURE (like 'waterproof', 'dimmable'), SPECIFICATION (like '12W', 'IP65'), or PRICE limit, DO NOT ask for clarification. Immediately call the tool using `category=None` and pass the feature/spec/max_price.\\n"
+            "If you do call the tool, you could incorporate long-term preferences.\\n"
             f"Available categories (collections): {collections_str}"
         ),
         INTENT_DETAIL: (
@@ -93,9 +96,9 @@ def get_intent_prompts():
 INTENT_TOOLS = {
     INTENT_SEARCH:    ["SearchProductsDatabase"],
     INTENT_DETAIL:    ["ProductDetailsDatabase", "SearchProductsDatabase"],
-    INTENT_POLICY:    ["PolicyVectorDatabase", "ProductDetailsDatabase", "GeneralKnowledgeDatabase"],
-    INTENT_ADVICE:    ["ProductAdviceDatabase", "GeneralKnowledgeDatabase"],
-    INTENT_KNOWLEDGE: ["GeneralKnowledgeDatabase", "ProductAdviceDatabase"],
+    INTENT_POLICY:    ["PolicyVectorDatabase", "ProductDetailsDatabase", "GeneralKnowledgeDatabase", "SearchProductsDatabase"],
+    INTENT_ADVICE:    ["ProductAdviceDatabase", "GeneralKnowledgeDatabase", "SearchProductsDatabase"],
+    INTENT_KNOWLEDGE: ["GeneralKnowledgeDatabase", "ProductAdviceDatabase", "SearchProductsDatabase"],
 }
 
 
@@ -104,6 +107,10 @@ INTENT_TOOLS = {
 
 class IntentClassification(BaseModel):
     """Schema for routing a user query to the correct intent."""
+    english_translation: str = Field(
+        ...,
+        description="The user's query translated into English. If it is already in English, simply copy it exactly."
+    )
     intent: str = Field(
         ...,
         description="The classified intent. Must be one of: 'search', 'detail', 'policy', 'advice', or 'knowledge'."
@@ -151,18 +158,19 @@ def classify_intent(query: str, llm=None, history_context: str = "") -> str:
 
         result = router.invoke(messages)
         intent = result.intent.lower()
+        translation = getattr(result, "english_translation", query)
         
         # Validate LLM output against known intents
         if intent not in get_intent_prompts():
             logger.warning(f"[Router] LLM returned unknown intent '{intent}', defaulting to 'search'.")
             intent = INTENT_SEARCH
             
-        logger.info(f"[Router] intent={intent} (agentic)  query={query!r}")
-        return intent
+        logger.info(f"[Router] intent={intent} (agentic) translation={translation!r} query={query!r}")
+        return intent, translation
 
     except Exception as e:
         logger.error(f"[Router] Agentic classification failed: {e}. Defaulting to 'search'.")
-        return INTENT_SEARCH
+        return INTENT_SEARCH, query
 
 
 def get_intent_config(
@@ -171,9 +179,9 @@ def get_intent_config(
     llm=None,
     explicit_intent: Optional[str] = None,
     history_context: str = ""
-) -> Tuple[str, list, str]:
+) -> Tuple[str, list, str, str]:
     """
-    Returns (system_prompt, filtered_tools, intent) for the given query.
+    Returns (system_prompt, filtered_tools, intent, translation) for the given query.
 
     Args:
         query: The user's message text.
@@ -183,9 +191,10 @@ def get_intent_config(
     """
     if explicit_intent and explicit_intent in get_intent_prompts():
         intent = explicit_intent
+        translation = query
         logger.info(f"[Router] intent={intent} (explicit override)")
     else:
-        intent = classify_intent(query, llm=llm, history_context=history_context)
+        intent, translation = classify_intent(query, llm=llm, history_context=history_context)
 
     prompt = get_intent_prompts()[intent]
     allowed_names = set(INTENT_TOOLS[intent])
@@ -196,4 +205,4 @@ def get_intent_config(
         filtered = all_tools
 
     logger.info(f"[Router] intent={intent} | tools={[t.name for t in filtered]}")
-    return prompt, filtered, intent
+    return prompt, filtered, intent, translation
