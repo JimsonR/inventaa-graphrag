@@ -51,8 +51,8 @@ def route_message(message: IncomingMessage):
             # Normalize tenant_id to lowercase ("Inventaa" → "inventaa")
             tenant = message.tenant_id.lower().strip() if message.tenant_id else None
             
-            # Temporary mapping: the WhatsApp bot only accepts tenant_swadhya_foods_001 for now
-            if tenant == "tenant_swadhya_foods_001":
+            # Temporary mapping: map frontend tenant aliases to the actual Neo4j tenant name
+            if tenant in ["tenant_swadhya_foods_001", "tenant_inventaa_led_001"]:
                 tenant = "inventaa"
 
             # Combine text and reply_text if the user clicked an option button
