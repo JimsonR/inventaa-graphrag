@@ -278,30 +278,42 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                 taxonomy_tags = extract_taxonomy(translation_embedding)
                 
                 if taxonomy_tags and "SearchProductsDatabase" in [t.name for t in active_tools]:
-                    tags_str = ", ".join([f"{k}={v}" for k, v in taxonomy_tags.items()])
-                    system_prompt += (f"\n\nSystem: The Vector Database suggests the following candidate database tags might be relevant to the user's query: {tags_str}. "
-                                      f"CRITICAL: Analyze the user's query and the conversation context. If multiple candidate collections equally apply to a broad query (e.g., 'outdoor' matches multiple candidates), DO NOT guess one. Instead, ask the user to clarify which specific collection they want. "
-                                      f"Otherwise, select the most accurate candidate to use in your SearchProductsDatabase tool call.")
+                    taxonomy_injection_pending = taxonomy_tags
+                else:
+                    taxonomy_injection_pending = None
 
-            # ─── Pre-Processor: Deterministic Routing ────────────────────────────
-            # The Preprocessor acts as a cheap "Early Exit" optimization for ultra-broad 
-            # English queries, saving LLM latency. If it fails, it gracefully falls back 
-            # to the Agent LLM's deep reasoning.
+            # ─── Pre-Processor: CategoryGroup Navigation Only ─────────────────────
+            # Handles ONLY umbrella navigation ("show products" → top-level groups,
+            # "outdoor" → outdoor collections). Everything else passes to LLM.
             if intent == "search":
                 from src.services.agent.preprocessor import preprocess_search
-                decision = preprocess_search(query_text, AgentConfig.collections)
+                decision = preprocess_search(
+                    query_text, AgentConfig.collections,
+                    category_groups=AgentConfig.category_groups,
+                    top_level_groups=AgentConfig.top_level_groups
+                )
                 
                 if decision["action"] == "clarify":
                     cols = decision["collections"]
                     reply = "Could you please specify which type you're interested in?\n\n"
                     reply += "\n".join(f"• {c}" for c in cols)
-                    logger.info("Pre-processor intercepted broad query. Returning clarification directly.")
+                    logger.info(f"Pre-processor intercepted broad query. Returning clarification with {len(cols)} options.")
                     return reply
                 
-                if decision.get("category"):
-                    system_prompt += (f"\n\nIMPORTANT: The user's query nearly perfectly matches the "
-                                      f"'{decision['category']}' collection. Strongly consider using category='{decision['category']}'.")
-                    logger.info(f"Pre-processor resolved category to: {decision['category']}")
+                if decision["action"] == "search" and decision.get("category"):
+                    # CategoryGroup resolved to a single collection (e.g. "solar" → "Solar Lights")
+                    resolved = decision["category"]
+                    system_prompt += (f"\n\nIMPORTANT: The user's query maps to the "
+                                      f"'{resolved}' collection. You MUST pass "
+                                      f"category='{resolved}' to SearchProductsDatabase.")
+                    logger.info(f"Pre-processor resolved category to: {resolved}")
+
+            # ─── Inject Taxonomy Candidates for LLM Reasoning ─────────────────────
+            if taxonomy_injection_pending:
+                tags_str = ", ".join([f"{k}={v}" for k, v in taxonomy_injection_pending.items()])
+                system_prompt += (f"\n\nSystem: The Vector Database suggests the following candidate database tags might be relevant to the user's query: {tags_str}. "
+                                  f"CRITICAL: Analyze the user's query and the conversation context. If multiple candidate collections equally apply to a broad query (e.g., 'outdoor' matches multiple candidates), DO NOT guess one. Instead, ask the user to clarify which specific collection they want. "
+                                  f"Otherwise, select the most accurate candidate to use in your SearchProductsDatabase tool call.")
             # ─────────────────────────────────────────────────────────────────────
 
             # ─── Semantic Cache: Lookup ──────────────────────────────────────────

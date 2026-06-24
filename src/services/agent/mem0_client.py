@@ -103,8 +103,12 @@ def fetch_long_term_context(query: str, user_id: str) -> str:
             
         facts = []
         seen_core_facts = set()
+        MAX_FACTS = 3  # Limit context injection to prevent prompt bloat
         
         for res in results:
+            if len(facts) >= MAX_FACTS:
+                break
+                
             fact_str = ""
             if isinstance(res, dict):
                 fact_str = str(res.get('memory', res))

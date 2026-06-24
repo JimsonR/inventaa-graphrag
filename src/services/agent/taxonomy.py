@@ -73,7 +73,7 @@ def extract_taxonomy(query_embedding: list, threshold: float = 0.85) -> dict:
         res = index.query(
             namespace="taxonomy-cache",
             vector=query_embedding,
-            top_k=9,
+            top_k=20,
             include_metadata=True
         )
         
@@ -85,8 +85,8 @@ def extract_taxonomy(query_embedding: list, threshold: float = 0.85) -> dict:
                 if tag_type and tag_name:
                     if tag_type not in matched_tags:
                         matched_tags[tag_type] = []
-                    # Keep up to top 3 unique candidates per type
-                    if tag_name not in matched_tags[tag_type] and len(matched_tags[tag_type]) < 3:
+                    # Keep up to top 10 unique candidates per type
+                    if tag_name not in matched_tags[tag_type] and len(matched_tags[tag_type]) < 10:
                         matched_tags[tag_type].append(tag_name)
                     
         if matched_tags:

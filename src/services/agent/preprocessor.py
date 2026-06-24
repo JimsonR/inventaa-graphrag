@@ -1,77 +1,57 @@
 """
 Deterministic query analysis BEFORE the LLM.
-Tenant-agnostic: works with any tenant's collection set.
+Handles ONLY two cases:
+  1. Ultra-broad queries (all noise words) → show top-level CategoryGroups
+  2. Pure umbrella terms matching a CategoryGroup name → show that group's collections
+
+Everything else (specific queries, typos, non-English) is passed to the LLM + Vector taxonomy.
+No token-level string matching against collection names.
 """
 import re
-from difflib import SequenceMatcher
 
 _NOISE = {
     "show", "me", "the", "all", "your", "available", "list", "what", 
     "do", "you", "have", "products", "product", "lights", "light", 
     "led", "please", "can", "i", "see", "get", "want", "need",
-    "looking", "for", "some", "any", "browse", "view"
+    "looking", "for", "some", "any", "browse", "view", "give",
+    "lighting", "type", "types", "category", "categories"
 }
 
-def preprocess_search(query: str, collections: list[str]) -> dict:
+def preprocess_search(query: str, collections: list[str], category_groups: dict = None, top_level_groups: list = None) -> dict:
     """
-    Analyzes the query and determines if it maps to a specific collection,
-    or if it is too broad and needs clarification.
+    Lightweight deterministic check for browse/navigation queries.
+    Only intercepts umbrella terms via CategoryGroup hierarchy.
+    Returns {"action": "pass"} for everything else → falls through to LLM.
     """
     # Remove punctuation
     cleaned_query = re.sub(r'[^\w\s]', '', query)
     query_tokens = set([t.lower().strip() for t in cleaned_query.split()])
+    
     
     # Meaningful tokens are those not in the noise list and length > 2
     meaningful_query_tokens = {t for t in query_tokens if t not in _NOISE and len(t) > 2}
     
     _NEGATION = {"not", "except", "other", "besides", "without", "no", "non"}
     if any(t in _NEGATION for t in query_tokens):
-        # Negation requires semantic reasoning that fuzzy matching cannot do.
-        # Fall back to the LLM immediately so it doesn't force the excluded category.
-        return {"action": "search", "category": None}
+        return {"action": "pass"}
         
-    # Case 1: All noise -> too broad
+    # Case 0: All noise → ultra-broad query (e.g. "show me products", "show all lights")
     if not meaningful_query_tokens:
+        if top_level_groups:
+            return {"action": "clarify", "collections": top_level_groups}
         return {"action": "clarify", "collections": collections}
     
-    best_matches = []
-    best_score = 0
+    # Case 1: Pure umbrella term matching a CategoryGroup name
+    # Only triggers when the group name is the ONLY meaningful token
+    if category_groups:
+        for group_name, group_collections in category_groups.items():
+            if group_name.lower() in meaningful_query_tokens:
+                remaining_tokens = meaningful_query_tokens - {group_name.lower()}
+                if not remaining_tokens:
+                    if len(group_collections) == 1:
+                        return {"action": "search", "category": group_collections[0]}
+                    else:
+                        return {"action": "clarify", "collections": group_collections}
     
-    # Case 2: Token-level overlap match
-    for col in collections:
-        col_tokens = set([t.lower().strip() for t in re.sub(r'[^\w\s]', '', col).split()])
-        meaningful_col_tokens = {t for t in col_tokens if t not in _NOISE and len(t) > 2}
-        
-        if not meaningful_col_tokens:
-            continue
-            
-        intersection = meaningful_query_tokens.intersection(meaningful_col_tokens)
-        
-        if intersection:
-            # Score is based on how much of the collection's core keywords were matched
-            score = len(intersection) / len(meaningful_col_tokens)
-            if score > best_score:
-                best_score = score
-                best_matches = [col]
-            elif score == best_score:
-                best_matches.append(col)
-                
-    # If the user perfectly hit some collection keywords (score >= 0.5 means at least half of the collection's unique keywords matched)
-    if best_score >= 0.5:
-        if len(best_matches) == 1:
-            return {"action": "search", "category": best_matches[0]}
-        else:
-            # It tied across multiple collections (e.g. "outdoor" matches "Outdoor Wall" and "Outdoor Commercial" equally)
-            # We want to clarify among the tied matches!
-            return {"action": "clarify", "collections": best_matches}
-    
-    # Case 3: Umbrella term mapping (Fallback if strict intersection failed)
-    matching = [c for c in collections if any(t in c.lower() for t in meaningful_query_tokens)]
-    
-    if len(matching) > 1:
-        return {"action": "clarify", "collections": matching}
-    if len(matching) == 1:
-        return {"action": "search", "category": matching[0]}
-    
-    # Case 4: Unknown specific term -> let LLM + tool handle it
-    return {"action": "search", "category": None}
+    # Everything else → pass to LLM + Vector taxonomy
+    return {"action": "pass"}
