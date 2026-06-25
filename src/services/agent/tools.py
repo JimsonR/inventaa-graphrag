@@ -38,6 +38,7 @@ def search_products_db(
     query: Optional[str] = None,
     category: Optional[str] = None,
     collection: Optional[str] = None,
+    collections: Optional[list[str]] = None,
     use_case: Optional[str] = None,
     feature: Optional[str] = None,
     spec: Optional[str] = None,
@@ -106,11 +107,15 @@ def search_products_db(
             cypher_query += "MATCH (p:Product)\n"
 
         # ─── 2. Structural Graph Matching ───────────────────────────────────────
+        target_collections = collections or []
         target_col = category or collection
-        if target_col:
+        if target_col and target_col not in target_collections:
+            target_collections.append(target_col)
+            
+        if target_collections:
             cypher_query += "MATCH (p)-[:BELONGS_TO_COLLECTION]->(c:Collection)\n"
-            where_clauses.append("toLower(c.name) = toLower($collection)")
-            params["collection"] = target_col
+            where_clauses.append("toLower(c.name) IN [x IN $target_collections | toLower(x)]")
+            params["target_collections"] = target_collections
             
         if feature:
             cypher_query += "MATCH (p)-[:HAS_FEATURE]->(f:Feature)\n"
@@ -229,7 +234,7 @@ RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
             all_collections.update(cols)
         
         # Intercept if the query matches products across multiple distinct collections and is large
-        if len(all_collections) > 2 and len(res) >= 10 and not category and not collection:
+        if len(all_collections) > 2 and len(res) >= 10 and not category and not collection and not collections:
             logger.info(f"[MultiCollectionFallback] Query matched {len(res)} products across {len(all_collections)} collections. Returning needs_clarification.")
             return json.dumps({
                 "needs_clarification": True,
@@ -522,6 +527,7 @@ def get_tools():
                 "\n- query (str): ONLY use this for exact PROPER NOUNS representing specific product names or brands (e.g. 'oxana', 'fabra'). DO NOT pass generic words, locations, applications, or features here (like 'pathway', 'walkway', 'garden', 'indoor', 'waterproof'). If you have a generic term, use the `feature` or `use_case` parameters instead and LEAVE THIS EMPTY."
                 "\n- category (str): explicit collection override."
                 "\n- collection (str): filter by collection name."
+                "\n- collections (list[str]): filter by multiple collections at once (e.g. for a broad category group like 'Outdoor')."
                 f"\n- feature (str): explicit filter for a physical feature. Valid options: {', '.join(AgentConfig.features) if AgentConfig.features else 'waterproof, dimmable'}."
                 f"\n- use_case (str): explicit filter for where the light will be used. Valid options: {', '.join(AgentConfig.use_cases) if AgentConfig.use_cases else 'Garden, Exterior'}."
                 "\n- spec (str): technical spec filter. Examples: 'IP65', '12W', '18W', 'aluminium', 'beam angle'"
