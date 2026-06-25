@@ -40,7 +40,11 @@ def build_graph(system_prompt: str, tools: list):
         # Guard: LangGraph crashes if the LLM returns neither text nor tool calls
         if not response.tool_calls and not response.content:
             agent_logger.warning("LLM returned empty response — injecting fallback message.")
-            response.content = "I'm sorry, I'm only able to assist with LED lighting products and related queries from Inventaa."
+            fallback = AgentConfig.brain.get("prompts", {}).get(
+                "fallback_error_message",
+                "I'm sorry, I'm only able to assist with LED lighting products and related queries from Inventaa."
+            )
+            response.content = fallback
 
         if response.tool_calls:
             agent_logger.info(f"LLM decided to call tools: {[tc['name'] for tc in response.tool_calls]}")
@@ -106,38 +110,38 @@ def build_graph(system_prompt: str, tools: list):
         is_direct_product_eval = isinstance(last_msg, ToolMessage) and last_msg.name == "SearchProductsDatabase"
 
         if is_direct_product_eval and product_search_result:
-            eval_prompt = f"""You are a strict product relevance judge for Inventaa, an Indian outdoor lighting brand.
-The user asked: "{user_query}"
-
-The product search tool returned the following JSON:
-{product_search_result}
-
-Decide if these products genuinely match what the user requested.
-Rules:
-- If the user asked for "indoor" products but ALL results are "outdoor", "exterior", or "gate" products -> REJECT.
-- If the results are completely unrelated product categories -> REJECT.
-- If the JSON is empty [] -> ACCEPT. This is a valid response meaning we do not carry the requested product.
-- If the results are reasonably relevant to the user's query -> ACCEPT.
-
-Output ONLY one of:
-- "VALID" if the results match (or if the JSON is empty [])
-- A short feedback sentence if they do not (e.g. "Results are exterior gate lights but user wants indoor lights. Tell user we don't carry indoor lights.")"""
+            brand_name = AgentConfig.brain.get("tenant", {}).get("name", "Inventaa")
+            brand_desc = AgentConfig.brain.get("tenant", {}).get("description", "an Indian LED lighting brand")
+            prompt_template = AgentConfig.brain.get("prompts", {}).get(
+                "judge_system_product",
+                f"You are a strict product relevance judge for {brand_name}.\n"
+                "The user asked: \"{user_query}\"\n"
+                "The product search tool returned the following JSON:\n{product_search_result}\n"
+                "Output ONLY \"VALID\" or a short feedback sentence."
+            )
+            eval_prompt = prompt_template.format(
+                brand_name=brand_name,
+                brand_description=brand_desc,
+                user_query=user_query,
+                product_search_result=product_search_result
+            )
         else:
             last_ai_msg = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
             last_ai_content = last_ai_msg.content if last_ai_msg else ""
-            eval_prompt = f"""You are a lenient QA evaluator for Inventaa.
-The user asked: "{user_query}"
-The agent responded: "{last_ai_content}"
-
-Output ONLY "VALID" unless the response has one of these CRITICAL failures:
-- The agent made up information not supported by any tool (hallucinated)
-- The agent said it doesn't know, but the response actually contains the answer
-- The agent gave the WRONG product (completely wrong product name)
-- The response is completely empty or a server error message
-
-DO NOT reject for minor phrasing preferences (e.g. saying "available in 18W" vs "only 18W available").
-DO NOT reject policy, FAQ, or product detail answers that contain the relevant facts.
-If in doubt, output "VALID"."""
+            brand_name = AgentConfig.brain.get("tenant", {}).get("name", "Inventaa")
+            
+            prompt_template = AgentConfig.brain.get("prompts", {}).get(
+                "judge_system_qa",
+                f"You are a lenient QA evaluator for {brand_name}.\n"
+                "The user asked: \"{user_query}\"\n"
+                "The agent responded: \"{last_ai_content}\"\n"
+                "Output ONLY \"VALID\" unless the response has CRITICAL failures."
+            )
+            eval_prompt = prompt_template.format(
+                brand_name=brand_name,
+                user_query=user_query,
+                last_ai_content=last_ai_content
+            )
 
         eval_res = AgentConfig.llm.invoke([SystemMessage(content=eval_prompt)])
         eval_content = eval_res.content.strip()
@@ -299,7 +303,10 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                     if cols:
                         reply += "\n".join(f"• {c}" for c in cols)
                     else:
-                        reply += "For example, are you looking for Indoor, Outdoor, or Solar lights?"
+                        reply += AgentConfig.brain.get("prompts", {}).get(
+                            "broad_query_fallback",
+                            "For example, are you looking for Indoor, Outdoor, or Solar lights?"
+                        )
                     return reply
 
             taxonomy_candidates_pending = None

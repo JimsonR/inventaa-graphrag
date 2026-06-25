@@ -52,8 +52,11 @@ def route_message(message: IncomingMessage):
             tenant = message.tenant_id.lower().strip() if message.tenant_id else None
             
             # Temporary mapping: map frontend tenant aliases to the actual Neo4j tenant name
-            if tenant in ["tenant_swadhya_foods_001", "tenant_inventaa_led_001"]:
-                tenant = "inventaa"
+            from src.services.agent.config import AgentConfig
+            aliases = AgentConfig.brain.get("tenant", {}).get("aliases", [])
+            tenant_id = AgentConfig.brain.get("tenant", {}).get("id", "inventaa")
+            if tenant in aliases:
+                tenant = tenant_id
 
             # Combine text and reply_text if the user clicked an option button
             query_text = message.text or ""

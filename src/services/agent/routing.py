@@ -33,24 +33,24 @@ INTENT_KNOWLEDGE = "knowledge"
 EXTERNAL_INTENT_MAP = {}
 
 # ─── Per-intent compact system prompts ────────────────────────────────────────
-_BASE_RULE = (
-    "You are an AI sales assistant for Inventaa, an Indian LED lighting brand.\n"
-    "RULES:\n"
-    "1. ALWAYS use tools to query the database before answering. \n"
-    "   - Always use `SearchProductsDatabase` to search for products. If the tool returns `needs_clarification` with a list of `available_collections`, you MUST present those collections to the user and ask them to narrow down their choice.\n"
-    "2. If the tool returns no data, say: \"I'm sorry, I don't have that information in our database.\"\n"
-    "3. NEVER hallucinate product names, prices, specs, or policies.\n"
-    "4. CRITICAL: NEVER manually list or type out product options as text. If you need to recommend or show products, you MUST call the `SearchProductsDatabase` tool so the UI can render them with images. Do not summarize products from conversation history into text.\n"
-    "5. When answering questions about policies, offers, or discounts, you MUST explicitly list out the exact percentages, tiers, and details provided by the tool. Do not just summarize that they exist.\n"
-    "6. If the tool returns store-wide or generic discounts (e.g. 'Extra 5% OFF on Rs 7500'), state those exact tiers. NEVER invent a specific percentage discount (like '50% off') for a product category if the tool does not explicitly state it.\n"
-    "7. ALWAYS respond in the exact same language that the user used in their original query. Do NOT reply in English if the user asked in another language.\n\n"
-)
-
-
 def get_intent_prompts():
     from src.services.agent.config import AgentConfig
+    brand_name = AgentConfig.brain.get("tenant", {}).get("name", "Inventaa")
     collections_str = " | ".join(AgentConfig.collections) if AgentConfig.collections else "3 in 1 gate light | Divine Light For Home Entrance | Indoor Commercial Lights | Indoor Domestic Lights | LED Outdoor Wall Light | Outdoor Commercial Lights | Outdoor Garden Bollard Light | Outdoor LED Gate Lamp Lights | Solar Lights"
     
+    _BASE_RULE = (
+        f"You are an AI sales assistant for {brand_name}.\n"
+        "RULES:\n"
+        "1. ALWAYS use tools to query the database before answering. \n"
+        "   - Always use `SearchProductsDatabase` to search for products. If the tool returns `needs_clarification` with a list of `available_collections`, you MUST present those collections to the user and ask them to narrow down their choice.\n"
+        "2. If the tool returns no data, say: \"I'm sorry, I don't have that information in our database.\"\n"
+        "3. NEVER hallucinate product names, prices, specs, or policies.\n"
+        "4. CRITICAL: NEVER manually list or type out product options as text. If you need to recommend or show products, you MUST call the `SearchProductsDatabase` tool so the UI can render them with images. Do not summarize products from conversation history into text.\n"
+        "5. When answering questions about policies, offers, or discounts, you MUST explicitly list out the exact percentages, tiers, and details provided by the tool. Do not just summarize that they exist.\n"
+        "6. If the tool returns store-wide or generic discounts (e.g. 'Extra 5% OFF on Rs 7500'), state those exact tiers. NEVER invent a specific percentage discount (like '50% off') for a product category if the tool does not explicitly state it.\n"
+        "7. ALWAYS respond in the exact same language that the user used in their original query. Do NOT reply in English if the user asked in another language.\n\n"
+    )
+
     return {
         INTENT_SEARCH: (
             _BASE_RULE +
@@ -92,16 +92,16 @@ def get_intent_prompts():
         ),
     }
 
-# ─── Per-intent allowed tool names ────────────────────────────────────────────
-INTENT_TOOLS = {
-    INTENT_SEARCH:    ["SearchProductsDatabase"],
-    INTENT_DETAIL:    ["ProductDetailsDatabase", "SearchProductsDatabase"],
-    INTENT_POLICY:    ["PolicyVectorDatabase", "ProductDetailsDatabase", "GeneralKnowledgeDatabase", "SearchProductsDatabase"],
-    INTENT_ADVICE:    ["ProductAdviceDatabase", "GeneralKnowledgeDatabase", "SearchProductsDatabase"],
-    INTENT_KNOWLEDGE: ["GeneralKnowledgeDatabase", "ProductAdviceDatabase", "SearchProductsDatabase"],
-}
-
-
+def get_intent_tools():
+    from src.services.agent.config import AgentConfig
+    intents = AgentConfig.brain.get("intents", {})
+    return {
+        INTENT_SEARCH:    intents.get("search", {}).get("tools", ["SearchProductsDatabase"]),
+        INTENT_DETAIL:    intents.get("detail", {}).get("tools", ["ProductDetailsDatabase", "SearchProductsDatabase"]),
+        INTENT_POLICY:    intents.get("policy", {}).get("tools", ["PolicyVectorDatabase", "ProductDetailsDatabase", "GeneralKnowledgeDatabase", "SearchProductsDatabase"]),
+        INTENT_ADVICE:    intents.get("advice", {}).get("tools", ["ProductAdviceDatabase", "GeneralKnowledgeDatabase", "SearchProductsDatabase"]),
+        INTENT_KNOWLEDGE: intents.get("knowledge", {}).get("tools", ["GeneralKnowledgeDatabase", "ProductAdviceDatabase", "SearchProductsDatabase"]),
+    }
 
 # ─── Agentic Intent Classifier ────────────────────────────────────────────────
 
@@ -124,17 +124,24 @@ class IntentClassification(BaseModel):
         description="If is_broad_navigation is True, map it to one of: 'Outdoor', 'Indoor', 'Solar', or 'All'."
     )
 
-_ROUTER_SYSTEM_PROMPT = """You are an intent classification router for an LED lighting company.
-Classify the user's query into exactly ONE of the following intents:
-
-- "search" : Browsing, finding, recommending, or filtering products by budget/rating/type.
-- "detail" : Asking for specific specs (wattage, dimensions, warranty, material) of a product, OR asking a follow-up question (like "warranty", "price") about a product recently mentioned in the conversation context.
-- "policy" : Questions about discounts, offers, deals, coupon codes (e.g. "offers on solar lights"), shipping, delivery, returns, general warranty claims procedure, or bulk pricing/dealer rates.
-- "advice" : Questions about installation, durability (waterproof, coastal, weather), or maintenance (NO named product).
-- "knowledge" : Educational concepts (what is IP rating/CRI/lumens), comparisons (LED vs solar, warm vs cool), or general buying guides.
-
-If the query does not perfectly match one, select the closest fit. If completely unrelated to lighting or company operations, default to "search".
-"""
+def get_router_system_prompt():
+    from src.services.agent.config import AgentConfig
+    brand_name = AgentConfig.brain.get("tenant", {}).get("name", "Inventaa")
+    brand_description = AgentConfig.brain.get("tenant", {}).get("description", "an Indian LED lighting brand")
+    intents = AgentConfig.brain.get("intents", {})
+    
+    intent_desc = "\n".join(intents.get(i, {}).get("description", f"- '{i}'") for i in [INTENT_SEARCH, INTENT_DETAIL, INTENT_POLICY, INTENT_ADVICE, INTENT_KNOWLEDGE])
+    
+    prompt_template = AgentConfig.brain.get("prompts", {}).get(
+        "router_system", 
+        "You are an intent classification router for {brand_name}, {brand_description}.\nClassify the user's query into exactly ONE of the following intents:\n{intent_descriptions}\nIf the query does not perfectly match one, select the closest fit."
+    )
+    
+    return prompt_template.format(
+        brand_name=brand_name,
+        brand_description=brand_description,
+        intent_descriptions=intent_desc
+    )
 
 def classify_intent(query: str, llm=None, history_context: str = "") -> IntentClassification:
     """
@@ -149,7 +156,7 @@ def classify_intent(query: str, llm=None, history_context: str = "") -> IntentCl
     try:
         router = llm.with_structured_output(IntentClassification)
         
-        system_content = _ROUTER_SYSTEM_PROMPT
+        system_content = get_router_system_prompt()
         if history_context:
             system_content += f"\n\nRecent Conversation Context to help disambiguate:\n{history_context}"
             
@@ -205,7 +212,7 @@ def get_intent_config(
         intent = router_result.intent
 
     prompt = get_intent_prompts()[intent]
-    allowed_names = set(INTENT_TOOLS[intent])
+    allowed_names = set(get_intent_tools()[intent])
     filtered = [t for t in all_tools if t.name in allowed_names]
 
     if not filtered:

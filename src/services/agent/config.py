@@ -21,11 +21,22 @@ class AgentConfig:
     features = []
     category_groups = {}  # {"Outdoor": ["LED Outdoor Wall Light", ...], ...}
     top_level_groups = []  # ["Outdoor", "Indoor", "Solar"]
+    # YAML Configuration
+    brain = {}
 
     @classmethod
     def initialize(cls):
         if cls._initialized:
             return
+
+        import yaml
+        config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "agent_config.yaml")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                cls.brain = yaml.safe_load(f)
+        except Exception as e:
+            logger.error(f"Failed to load agent_config.yaml at {config_path}: {e}")
+            cls.brain = {}
 
         logger.info("Initializing AgentConfig dependencies...")
 
@@ -77,7 +88,7 @@ class AgentConfig:
                 row = res[0]
                 cls.collections = sorted(row.get("cols", []))
                 cls.use_cases = sorted(row.get("ucs", []))
-                cls.features = sorted(row.get("feats", []))
+                cls.features = sorted(row.get("feats", []))    
             
             # Load hand-curated category groups for browse/navigation queries
             group_res = cls.graph.query("""

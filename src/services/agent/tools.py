@@ -73,12 +73,12 @@ def search_products_db(
 
         # 1. Full-Text Search
         if query:
-            _STOP = {
+            _STOP = set(AgentConfig.brain.get("search_heuristics", {}).get("stop_words", [
                 "led", "light", "lights", "lamp", "lamps", "the", "a", "an", "and", "or", "for", "of", "in", "with", 
                 "by", "from", "lighting", "offers", "offer", "discount", "discounts", "sale", "deal", "deals", 
                 "best", "top", "cheap", "cheapest", "buy", "show", "me", "any", "on", "indoor", "outdoor",
                 "product", "products"
-            }
+            ]))
             raw = [t.strip(".,?!-–—/|") for t in query.split()]
             good_tokens = [t.lower() for t in raw if t and len(t) > 2 and t.lower() not in _STOP]
             
@@ -253,11 +253,11 @@ def get_product_details_db(product_name: str):
     try:
         # --- Smarter tokenization ---
         # Strip noise tokens (stop words, single chars, numbers-only, punctuation like "-")
-        _DETAIL_STOP = {
+        _DETAIL_STOP = set(AgentConfig.brain.get("search_heuristics", {}).get("detail_stop_words", [
             "led", "light", "lights", "lamp", "lamps", "the", "a", "an",
             "and", "or", "for", "of", "in", "with", "by", "from",
             "frontgate", "lighting", "design", "outdoor", "indoor",
-        }
+        ]))
         raw_tokens = [t.strip(".,?!-–—/|") for t in product_name.split()]
         # Keep tokens that are meaningful: length > 1, not stop, not pure numbers
         good_tokens = [
@@ -600,7 +600,7 @@ def get_tools():
                 "Use this to search for active offers, discounts, promotions, and coupon codes. "
                 "Also use this for educational, comparison, and 'how-to' questions about lighting concepts "
                 "that are NOT about a specific product and NOT a company policy. "
-                "This searches Inventaa's blog articles and knowledge base. "
+                f"This searches {AgentConfig.brain.get('tenant', {}).get('name', 'Inventaa')}'s blog articles and knowledge base. "
                 "Examples: "
                 "'Are there any offers on solar lights?', "
                 "'Wave-Free LED Panel Lights vs Traditional LED Panel Lights', "
