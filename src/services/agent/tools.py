@@ -507,105 +507,51 @@ def query_general_knowledge(query: str):
         return f"Error searching knowledge base: {e}"
 
 
+import yaml
+import os
+
+_tools_config = None
+
 def get_tools():
+    global _tools_config
+    if _tools_config is None:
+        config_path = os.path.join(os.path.dirname(__file__), 'tools_config.yaml')
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                _tools_config = yaml.safe_load(f).get('tools', [])
+        except Exception as e:
+            logger.error(f"Failed to load tools_config.yaml: {e}")
+            _tools_config = []
+            
+    # Convert list to dictionary for O(1) lookup
+    tool_descriptions = {t['name']: t['description'] for t in _tools_config}
+
     return [
         StructuredTool.from_function(
             name="SearchProductsDatabase",
             func=search_products_db,
-            description=(
-                "Search, list, filter, or get product recommendations from the graph database. "
-                "Use this for: product listings, budget-based queries, application-based recommendations, "
-                "comparison queries (e.g. warm vs cool white), or any query that requires showing multiple products. "
-                "The tool auto-detects category, use case, and features from the query. If the user's long-term memory or context specifies a preference (like a specific category), you could explicitly set the corresponding parameter (e.g. `category` or `feature`) rather than relying purely on the current conversational text. "
-                "CRITICAL: If the user asks to search 'in all collections' or 'across all categories', DO NOT call this tool multiple times. Simply call it ONCE with `category=None` and `collection=None`."
-                "\n\nParameters:"
-                "\n- query (str): ONLY use this for exact PROPER NOUNS representing specific product names or brands (e.g. 'oxana', 'fabra'). DO NOT pass generic words, locations, applications, or features here (like 'pathway', 'walkway', 'garden', 'indoor', 'waterproof'). If you have a generic term, use the `feature` or `use_case` parameters instead and LEAVE THIS EMPTY."
-                "\n- category (str): explicit collection override."
-                "\n- collection (str): filter by collection name."
-                f"\n- feature (str): explicit filter for a physical feature. Valid options: {', '.join(AgentConfig.features) if AgentConfig.features else 'waterproof, dimmable'}."
-                f"\n- use_case (str): explicit filter for where the light will be used. Valid options: {', '.join(AgentConfig.use_cases) if AgentConfig.use_cases else 'Garden, Exterior'}."
-                "\n- spec (str): technical spec filter. Examples: 'IP65', '12W', '18W', 'aluminium', 'beam angle'"
-                "\n- min_price / max_price (int): price range in INR (e.g. max_price=10000 for '₹10,000 budget')"
-                "\n- sort_by (str): rating_desc, rating_asc, price_asc, price_desc, reviews_desc, wattage_asc, wattage_desc"
-                "\n- limit (int): number of results (default 100)"
-                "\n\nEXAMPLES:"
-                "\n- 'show me waterproof lights for the garden' → query=None, feature='Waterproof', use_case='Garden'"
-                "\n- 'low electricity exterior lights' → query=None, use_case='Exterior', sort_by='wattage_asc'"
-                "\n- 'cheapest solar gate light' → query=None, category='Solar Lights', use_case='Gate-Pillar', sort_by='price_asc'"
-                "\n- 'lights for garden under ₹2000' → query=None, use_case='Garden', max_price=2000"
-                "\n- 'oxana wall light' → query='oxana', category='LED Outdoor Wall Light', use_case=None"
-                "\n- 'lights under ₹10000' → max_price=10000, sort_by='rating_desc'"
-                "\n- 'IP65 rated street lights' → query='street', spec='IP65'"
-                "\n- 'lights for heavy rainfall area' → feature='waterproof'"
-                "\n- 'warm white pathway lights' → query='pathway', feature='warm-white'"
-                "\n- 'energy efficient gate lights' → query='gate', feature='energy-efficient'"
-            ),
+            description=tool_descriptions.get("SearchProductsDatabase", "Fallback description"),
             return_direct=False
         ),
-
         StructuredTool.from_function(
             name="ProductDetailsDatabase",
             func=get_product_details_db,
-            description=(
-                "Use this when the user asks about ONE specific named product's details: "
-                "warranty, wattage, dimensions, material, IP rating, beam angle, lumens, "
-                "mounting type, colour temperature, or any other technical specification. "
-                "Examples: 'What is the warranty of the Artoo light?', "
-                "'Is the Athena light available in warm white?', "
-                "'What material is the Tacita fixture made of?', "
-                "'What are the dimensions of the Mini Olivia light?'"
-            ),
+            description=tool_descriptions.get("ProductDetailsDatabase", "Fallback description"),
             return_direct=False
         ),
         Tool(
             name="PolicyVectorDatabase",
             func=query_policies,
-            description=(
-                "Use this for company-wide operational policies: "
-                "Use this for company-wide operational policies: "
-                "shipping, delivery time, delivery charges, order tracking, return policy, "
-                "replacement process, exchange process, warranty claim procedure, "
-                "bulk pricing, dealer/distributor pricing, contractor rates, "
-                "damaged product on arrival, wrong item received, required documents for claims. "
-                "Do NOT use for product-specific specs or features."
-            )
+            description=tool_descriptions.get("PolicyVectorDatabase", "Fallback description")
         ),
         Tool(
             name="ProductAdviceDatabase",
             func=query_product_faqs,
-            description=(
-                "Use this for general product FAQs, installation guidance, and suitability advice "
-                "NOT tied to a specific named product: "
-                "'Is installation easy?', 'Can I install it myself?', "
-                "'Does the package include mounting hardware?', "
-                "'Can it be connected to a timer or smart switch?', "
-                "'Is it suitable for coastal areas?', "
-                "'How long do LEDs last?', 'What is the expected lifespan?', "
-                "'Will switching to LED reduce electricity bill?', "
-                "'Which is better: warm white or cool white?', "
-                "'Which light requires the least maintenance?', "
-                "'Can this be used for commercial spaces?'"
-            )
+            description=tool_descriptions.get("ProductAdviceDatabase", "Fallback description")
         ),
         Tool(
             name="GeneralKnowledgeDatabase",
             func=query_general_knowledge,
-            description=(
-                "Use this to search for active offers, discounts, promotions, and coupon codes. "
-                "Also use this for educational, comparison, and 'how-to' questions about lighting concepts "
-                "that are NOT about a specific product and NOT a company policy. "
-                "This searches Inventaa's blog articles and knowledge base. "
-                "Examples: "
-                "'Are there any offers on solar lights?', "
-                "'Wave-Free LED Panel Lights vs Traditional LED Panel Lights', "
-                "'What is the difference between bollard and pathway lights?', "
-                "'How to choose outdoor lighting?', "
-                "'Benefits of solar lights', "
-                "'What is colour rendering index (CRI)?', "
-                "'How many lumens do I need for outdoor lighting?', "
-                "'LED vs fluorescent lights comparison', "
-                "'How to reduce electricity bill with LED lighting', "
-                "'What is IP rating in outdoor lights?'"
-            )
+            description=tool_descriptions.get("GeneralKnowledgeDatabase", "Fallback description")
         )
     ]
