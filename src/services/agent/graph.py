@@ -270,21 +270,26 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                     long_term_context = future_mem0.result()
 
             with track_time("Total Pre-computation Phase 2 (Taxonomy Match)", custom_logger=task_logger):
-                # We embed the translation purely for cross-lingual taxonomy matching
-                translation_embedding = AgentConfig.embeddings.embed_query(translation)
-                
-                # Extract taxonomy tags via vector similarity
-                from src.services.agent.taxonomy import extract_taxonomy
-                taxonomy_tags = extract_taxonomy(translation_embedding)
-                
-                if taxonomy_tags and "SearchProductsDatabase" in [t.name for t in active_tools]:
-                    taxonomy_injection_pending = taxonomy_tags
+                # Only call Azure OpenAI to embed the translation if it actually changed (e.g. from Telugu to English)
+                # If it's the same, reuse the embedding from Phase 1 to save 1.5 - 15 seconds of latency!
+                if translation and translation != query_text:
+                    translation_embedding = AgentConfig.embeddings.embed_query(translation)
                 else:
-                    taxonomy_injection_pending = None
+                    translation_embedding = query_embedding
+                
+                # Fetch raw candidates via vector similarity
+                from src.services.agent.taxonomy import fetch_taxonomy_candidates, extract_taxonomy_parameters
+                raw_candidates = fetch_taxonomy_candidates(translation_embedding)
+                
+                if raw_candidates and "SearchProductsDatabase" in [t.name for t in active_tools]:
+                    taxonomy_candidates_pending = raw_candidates
+                else:
+                    taxonomy_candidates_pending = None
 
             # ─── Pre-Processor: CategoryGroup Navigation Only ─────────────────────
             # Handles ONLY umbrella navigation ("show products" → top-level groups,
             # "outdoor" → outdoor collections). Everything else passes to LLM.
+            resolved_preprocessor_category = None
             if intent == "search":
                 from src.services.agent.preprocessor import preprocess_search
                 decision = preprocess_search(
@@ -301,19 +306,32 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                     return reply
                 
                 if decision["action"] == "search" and decision.get("category"):
-                    # CategoryGroup resolved to a single collection (e.g. "solar" → "Solar Lights")
-                    resolved = decision["category"]
-                    system_prompt += (f"\n\nIMPORTANT: The user's query maps to the "
-                                      f"'{resolved}' collection. You MUST pass "
-                                      f"category='{resolved}' to SearchProductsDatabase.")
-                    logger.info(f"Pre-processor resolved category to: {resolved}")
+                    resolved_preprocessor_category = decision["category"]
+                    logger.info(f"Pre-processor resolved category to: {resolved_preprocessor_category}")
 
-            # ─── Inject Taxonomy Candidates for LLM Reasoning ─────────────────────
-            if taxonomy_injection_pending:
-                tags_str = ", ".join([f"{k}={v}" for k, v in taxonomy_injection_pending.items()])
-                system_prompt += (f"\n\nSystem: The Vector Database suggests the following candidate database tags might be relevant to the user's query: {tags_str}. "
-                                  f"CRITICAL: Analyze the user's query and the conversation context. If multiple candidate collections equally apply to a broad query (e.g., 'outdoor' matches multiple candidates), DO NOT guess one. Instead, ask the user to clarify which specific collection they want. "
-                                  f"Otherwise, select the most accurate candidate to use in your SearchProductsDatabase tool call.")
+            # ─── Sub-Agent: Taxonomy Parameter Extraction ──────────────────────────
+            if resolved_preprocessor_category:
+                system_prompt += (f"\n\nIMPORTANT: The user's query exactly maps to the "
+                                  f"'{resolved_preprocessor_category}' collection. You MUST pass "
+                                  f"category='{resolved_preprocessor_category}' to SearchProductsDatabase.")
+            elif taxonomy_candidates_pending:
+                # Let the tiny Sub-Agent filter the messy vector candidates into exact tool parameters
+                extracted_params = extract_taxonomy_parameters(query_text, taxonomy_candidates_pending)
+                
+                if extracted_params.clarify:
+                    logger.info("Taxonomy Sub-Agent determined query is too broad. Returning clarification request.")
+                    return "There are a few different types of products that match your request. Could you specify a bit more about what you are looking for?"
+                
+                # Build clean parameter list for Main Agent
+                clean_params = []
+                if extracted_params.category: clean_params.append(f"category='{extracted_params.category}'")
+                if extracted_params.use_case: clean_params.append(f"use_case='{extracted_params.use_case}'")
+                if extracted_params.feature: clean_params.append(f"feature='{extracted_params.feature}'")
+                
+                if clean_params:
+                    params_str = ", ".join(clean_params)
+                    system_prompt += (f"\n\nSystem: Based on the user's request, you MUST use the following exact parameters "
+                                      f"in your SearchProductsDatabase call: {params_str}.")
             # ─────────────────────────────────────────────────────────────────────
 
             # ─── Semantic Cache: Lookup ──────────────────────────────────────────
