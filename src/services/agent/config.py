@@ -19,6 +19,8 @@ class AgentConfig:
     collections = []
     use_cases = []
     features = []
+    category_groups = {}  # {"Outdoor": ["LED Outdoor Wall Light", ...], ...}
+    top_level_groups = []  # ["Outdoor", "Indoor", "Solar"]
 
     @classmethod
     def initialize(cls):
@@ -77,7 +79,15 @@ class AgentConfig:
                 cls.use_cases = sorted(row.get("ucs", []))
                 cls.features = sorted(row.get("feats", []))
             
-            logger.info(f"Loaded schema dynamically: {len(cls.collections)} Collections, {len(cls.use_cases)} UseCases, {len(cls.features)} Features")
+            # Load hand-curated category groups for browse/navigation queries
+            group_res = cls.graph.query("""
+                MATCH (cg:CategoryGroup)-[:CONTAINS]->(c:Collection)
+                RETURN cg.name AS group_name, cg.is_top_level AS is_top_level, collect(c.name) AS collections
+            """)
+            cls.category_groups = {r['group_name']: r['collections'] for r in group_res}
+            cls.top_level_groups = [r['group_name'] for r in group_res if r.get('is_top_level')]
+            
+            logger.info(f"Loaded schema dynamically: {len(cls.collections)} Collections, {len(cls.use_cases)} UseCases, {len(cls.features)} Features, {len(cls.category_groups)} CategoryGroups ({len(cls.top_level_groups)} top-level)")
             
             # 6. Sync taxonomy to vector database for semantic parameter mapping
             from src.services.agent.taxonomy import sync_taxonomy

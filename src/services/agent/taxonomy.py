@@ -59,21 +59,37 @@ def sync_taxonomy():
         logger.error(f"Failed to sync taxonomy: {e}", exc_info=True)
 
 
-def extract_taxonomy(query_embedding: list, threshold: float = 0.85) -> dict:
-    """
-    Queries the taxonomy-cache and returns matched tags grouped by type.
-    Example return: {'feature': 'waterproof', 'use_case': 'gate-pillar'}
-    We only return the TOP match per type to avoid conflicting parameters.
-    """
-    try:
+from pydantic import BaseModel, Field
+from typing import Optional
+
+class TaxonomyExtraction(BaseModel):
+    category: Optional[str] = Field(None, description="The specific collection name, if explicitly requested or matched. Must be exact string from candidates.")
+    use_case: Optional[str] = Field(None, description="The specific use case. Must be exact string from candidates.")
+    feature: Optional[str] = Field(None, description="The specific feature. Must be exact string from candidates.")
+    clarify: bool = Field(False, description="Set to true ONLY IF multiple conflicting collections/categories apply equally and you need the user to clarify.")
+
+_pinecone_index = None
+
+def _get_pinecone_index():
+    global _pinecone_index
+    if _pinecone_index is None:
         pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
         index_name = os.getenv("PINECONE_INDEX_NAME", "inventaa")
-        index = pc.Index(index_name)
+        _pinecone_index = pc.Index(index_name)
+    return _pinecone_index
+
+def fetch_taxonomy_candidates(query_embedding: list, threshold: float = 0.85) -> dict:
+    """
+    Queries the taxonomy-cache and returns matched tags grouped by type.
+    Example return: {'feature': ['waterproof'], 'use_case': ['gate-pillar', 'garden-pathway']}
+    """
+    try:
+        index = _get_pinecone_index()
         
         res = index.query(
             namespace="taxonomy-cache",
             vector=query_embedding,
-            top_k=3,
+            top_k=7,
             include_metadata=True
         )
         
@@ -82,12 +98,46 @@ def extract_taxonomy(query_embedding: list, threshold: float = 0.85) -> dict:
             if match.score >= threshold:
                 tag_type = match.metadata.get("type")
                 tag_name = match.metadata.get("name")
-                if tag_type and tag_name and tag_type not in matched_tags:
-                    matched_tags[tag_type] = tag_name
+                if tag_type and tag_name:
+                    if tag_type not in matched_tags:
+                        matched_tags[tag_type] = []
+                    # Keep up to top 10 unique candidates per type
+                    if tag_name not in matched_tags[tag_type] and len(matched_tags[tag_type]) < 10:
+                        matched_tags[tag_type].append(tag_name)
                     
         if matched_tags:
-            logger.info(f"[Taxonomy] Matched tags: {matched_tags} (threshold={threshold})")
+            logger.info(f"[Taxonomy] Fetched candidate tags: {matched_tags} (threshold={threshold})")
         return matched_tags
     except Exception as e:
-        logger.error(f"[Taxonomy] Error extracting taxonomy: {e}")
+        logger.error(f"[Taxonomy] Error fetching taxonomy candidates: {e}")
         return {}
+
+def extract_taxonomy_parameters(query_text: str, candidate_tags: dict) -> TaxonomyExtraction:
+    """
+    Sub-Agent: Uses LLM Structured Outputs to filter the messy candidate_tags 
+    into an exact set of tool parameters for the Main Agent.
+    """
+    if not candidate_tags:
+        return TaxonomyExtraction()
+        
+    try:
+        structured_llm = AgentConfig.llm.with_structured_output(TaxonomyExtraction)
+        
+        prompt = (
+            f"User Query: '{query_text}'\n\n"
+            f"Candidate Tags from Vector DB:\n{candidate_tags}\n\n"
+            "Task: Act as a strict filter. Read the candidate tags and select the exact correct category, use_case, or feature that matches the user's query.\n"
+            "Rules:\n"
+            "1. You MUST pick the exact string from the Candidate Tags. Do not invent tags.\n"
+            "2. Reject false-positives (e.g. if query says 'outdoor wall' and vector db suggests 'indoor-ceiling', ignore 'indoor-ceiling').\n"
+            "3. If multiple categories (collections) apply equally to a broad query, DO NOT guess. Set clarify=True.\n"
+            "4. Return null for fields that have no perfect match."
+        )
+        
+        result = structured_llm.invoke(prompt)
+        logger.info(f"[Taxonomy Sub-Agent] Extracted Parameters: {result}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"[Taxonomy Sub-Agent] Error extracting parameters: {e}", exc_info=True)
+        return TaxonomyExtraction()
