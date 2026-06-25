@@ -115,6 +115,14 @@ class IntentClassification(BaseModel):
         ...,
         description="The classified intent. Must be one of: 'search', 'detail', 'policy', 'advice', or 'knowledge'."
     )
+    is_broad_navigation: bool = Field(
+        False, 
+        description="True ONLY if the user is asking to browse a TOP-LEVEL category like 'outdoor', 'indoor', 'solar', or 'all products' (e.g. 'I want to buy outdoor lights', 'show me everything'). FALSE if they are asking for anything else, including sub-categories like 'gate', 'wall', 'commercial', 'garden', or specific features."
+    )
+    broad_category_group: Optional[str] = Field(
+        None, 
+        description="If is_broad_navigation is True, map it to one of: 'Outdoor', 'Indoor', 'Solar', or 'All'."
+    )
 
 _ROUTER_SYSTEM_PROMPT = """You are an intent classification router for an LED lighting company.
 Classify the user's query into exactly ONE of the following intents:
@@ -128,15 +136,15 @@ Classify the user's query into exactly ONE of the following intents:
 If the query does not perfectly match one, select the closest fit. If completely unrelated to lighting or company operations, default to "search".
 """
 
-def classify_intent(query: str, llm=None, history_context: str = "") -> str:
+def classify_intent(query: str, llm=None, history_context: str = "") -> IntentClassification:
     """
-    Classifies intent using a fast LLM call.
+    Classifies intent using a fast LLM call. Returns the parsed IntentClassification object.
     """
 
     # 2. Agentic Classification
     if llm is None:
         logger.warning("[Router] No LLM provided to classifier, defaulting to 'search'.")
-        return INTENT_SEARCH
+        return IntentClassification(english_translation=query, intent=INTENT_SEARCH, is_broad_navigation=False)
 
     try:
         router = llm.with_structured_output(IntentClassification)
@@ -158,19 +166,18 @@ def classify_intent(query: str, llm=None, history_context: str = "") -> str:
 
         result = router.invoke(messages)
         intent = result.intent.lower()
-        translation = getattr(result, "english_translation", query)
         
         # Validate LLM output against known intents
         if intent not in get_intent_prompts():
             logger.warning(f"[Router] LLM returned unknown intent '{intent}', defaulting to 'search'.")
-            intent = INTENT_SEARCH
+            result.intent = INTENT_SEARCH
             
-        logger.info(f"[Router] intent={intent} (agentic) translation={translation!r} query={query!r}")
-        return intent, translation
+        logger.info(f"[Router] intent={result.intent} (agentic) translation={result.english_translation!r} broad={result.is_broad_navigation}")
+        return result
 
     except Exception as e:
         logger.error(f"[Router] Agentic classification failed: {e}. Defaulting to 'search'.")
-        return INTENT_SEARCH, query
+        return IntentClassification(english_translation=query, intent=INTENT_SEARCH, is_broad_navigation=False)
 
 
 def get_intent_config(
@@ -179,9 +186,9 @@ def get_intent_config(
     llm=None,
     explicit_intent: Optional[str] = None,
     history_context: str = ""
-) -> Tuple[str, list, str, str]:
+) -> Tuple[str, list, IntentClassification]:
     """
-    Returns (system_prompt, filtered_tools, intent, translation) for the given query.
+    Returns (system_prompt, filtered_tools, router_result) for the given query.
 
     Args:
         query: The user's message text.
@@ -191,10 +198,11 @@ def get_intent_config(
     """
     if explicit_intent and explicit_intent in get_intent_prompts():
         intent = explicit_intent
-        translation = query
+        router_result = IntentClassification(english_translation=query, intent=intent, is_broad_navigation=False)
         logger.info(f"[Router] intent={intent} (explicit override)")
     else:
-        intent, translation = classify_intent(query, llm=llm, history_context=history_context)
+        router_result = classify_intent(query, llm=llm, history_context=history_context)
+        intent = router_result.intent
 
     prompt = get_intent_prompts()[intent]
     allowed_names = set(INTENT_TOOLS[intent])
@@ -205,4 +213,4 @@ def get_intent_config(
         filtered = all_tools
 
     logger.info(f"[Router] intent={intent} | tools={[t.name for t in filtered]}")
-    return prompt, filtered, intent, translation
+    return prompt, filtered, router_result

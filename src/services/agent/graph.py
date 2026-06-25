@@ -245,8 +245,8 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                 with track_time("Task: History & Intent", custom_logger=task_logger):
                     history = get_recent_messages(session_id=session_id, exclude_message_id=message_id, limit=5)
                     history_text = "\n".join([f"{'User' if isinstance(m, HumanMessage) else 'Agent'}: {m.content}" for m in history[-2:]])
-                    sys_prompt, active_tools, intent, translation = get_intent_config(query_text, all_tools, llm=AgentConfig.llm, history_context=history_text)
-                    return history, sys_prompt, active_tools, intent, translation
+                    sys_prompt, active_tools, router_result = get_intent_config(query_text, all_tools, llm=AgentConfig.llm, history_context=history_text)
+                    return history, sys_prompt, active_tools, router_result
 
             def task_embedding():
                 from src.services.agent.utils import track_time
@@ -265,62 +265,78 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                     future_embedding = executor.submit(task_embedding)
                     future_mem0 = executor.submit(task_mem0)
 
-                    history, system_prompt, active_tools, intent, translation = future_intent.result()
+                    history, system_prompt, active_tools, router_result = future_intent.result()
+                    intent = router_result.intent
+                    translation = router_result.english_translation
                     query_embedding = future_embedding.result()
                     long_term_context = future_mem0.result()
 
-            with track_time("Total Pre-computation Phase 2 (Taxonomy Match)", custom_logger=task_logger):
-                # Only call Azure OpenAI to embed the translation if it actually changed (e.g. from Telugu to English)
-                # If it's the same, reuse the embedding from Phase 1 to save 1.5 - 15 seconds of latency!
-                if translation and translation != query_text:
-                    translation_embedding = AgentConfig.embeddings.embed_query(translation)
-                else:
-                    translation_embedding = query_embedding
-                
-                # Fetch raw candidates via vector similarity
-                from src.services.agent.taxonomy import fetch_taxonomy_candidates, extract_taxonomy_parameters
-                raw_candidates = fetch_taxonomy_candidates(translation_embedding)
-                
-                if raw_candidates and "SearchProductsDatabase" in [t.name for t in active_tools]:
-                    taxonomy_candidates_pending = raw_candidates
-                else:
-                    taxonomy_candidates_pending = None
+            forced_single_collection = None
 
-            # ─── Pre-Processor: CategoryGroup Navigation Only ─────────────────────
-            # Handles ONLY umbrella navigation ("show products" → top-level groups,
-            # "outdoor" → outdoor collections). Everything else passes to LLM.
-            resolved_preprocessor_category = None
-            if intent == "search":
-                from src.services.agent.preprocessor import preprocess_search
-                decision = preprocess_search(
-                    query_text, AgentConfig.collections,
-                    category_groups=AgentConfig.category_groups,
-                    top_level_groups=AgentConfig.top_level_groups
-                )
+            # ─── Agentic Broad Navigation Intercept ────────────────────────────────
+            if router_result.is_broad_navigation:
+                logger.info(f"Agentic Router intercepted broad query. Group: {router_result.broad_category_group}")
+                if router_result.broad_category_group and router_result.broad_category_group.lower() != "all":
+                    group_key = router_result.broad_category_group.lower()
+                    
+                    # Case-insensitive lookup in category_groups
+                    matched_group = next((k for k in AgentConfig.category_groups.keys() if k.lower() == group_key), None) if AgentConfig.category_groups else None
+                    
+                    if matched_group:
+                        cols = AgentConfig.category_groups[matched_group]
+                        if len(cols) == 1:
+                            logger.info(f"Top-level group '{group_key}' only has 1 collection ({cols[0]}). Bypassing clarification and forcing search.")
+                            forced_single_collection = cols[0]
+                        else:
+                            reply = "Could you please specify which type you're interested in?\n\n"
+                            reply += "\n".join(f"• {c}" for c in cols)
+                            return reply
                 
-                if decision["action"] == "clarify":
-                    cols = decision["collections"]
+                if not forced_single_collection:
+                    # Default "All" or unrecognized group
+                    cols = AgentConfig.top_level_groups or []
                     reply = "Could you please specify which type you're interested in?\n\n"
-                    reply += "\n".join(f"• {c}" for c in cols)
-                    logger.info(f"Pre-processor intercepted broad query. Returning clarification with {len(cols)} options.")
+                    if cols:
+                        reply += "\n".join(f"• {c}" for c in cols)
+                    else:
+                        reply += "For example, are you looking for Indoor, Outdoor, or Solar lights?"
                     return reply
-                
-                if decision["action"] == "search" and decision.get("category"):
-                    resolved_preprocessor_category = decision["category"]
-                    logger.info(f"Pre-processor resolved category to: {resolved_preprocessor_category}")
+
+            taxonomy_candidates_pending = None
+            if forced_single_collection:
+                system_prompt += (f"\n\nIMPORTANT: The user is asking for a category group that exactly maps to the "
+                                  f"'{forced_single_collection}' collection. You MUST pass category='{forced_single_collection}' to SearchProductsDatabase.")
+            else:
+                with track_time("Total Pre-computation Phase 2 (Taxonomy Match)", custom_logger=task_logger):
+                    # Only call Azure OpenAI to embed the translation if it actually changed (e.g. from Telugu to English)
+                    # If it's the same, reuse the embedding from Phase 1 to save 1.5 - 15 seconds of latency!
+                    if translation and translation != query_text:
+                        translation_embedding = AgentConfig.embeddings.embed_query(translation)
+                    else:
+                        translation_embedding = query_embedding
+                    
+                    # Fetch raw candidates via vector similarity
+                    from src.services.agent.taxonomy import fetch_taxonomy_candidates, extract_taxonomy_parameters
+                    raw_candidates = fetch_taxonomy_candidates(translation_embedding)
+                    
+                    if raw_candidates and "SearchProductsDatabase" in [t.name for t in active_tools]:
+                        taxonomy_candidates_pending = raw_candidates
 
             # ─── Sub-Agent: Taxonomy Parameter Extraction ──────────────────────────
-            if resolved_preprocessor_category:
-                system_prompt += (f"\n\nIMPORTANT: The user's query exactly maps to the "
-                                  f"'{resolved_preprocessor_category}' collection. You MUST pass "
-                                  f"category='{resolved_preprocessor_category}' to SearchProductsDatabase.")
-            elif taxonomy_candidates_pending:
+            if taxonomy_candidates_pending:
                 # Let the tiny Sub-Agent filter the messy vector candidates into exact tool parameters
                 extracted_params = extract_taxonomy_parameters(query_text, taxonomy_candidates_pending)
                 
                 if extracted_params.clarify:
                     logger.info("Taxonomy Sub-Agent determined query is too broad. Returning clarification request.")
-                    return "There are a few different types of products that match your request. Could you specify a bit more about what you are looking for?"
+                    # Grab the candidate categories that confused the sub-agent
+                    candidate_cols = taxonomy_candidates_pending.get("category", [])
+                    reply = "There are a few different types of products that match your request. Could you specify which type you're interested in?\n\n"
+                    if candidate_cols:
+                        reply += "\n".join(f"• {c}" for c in candidate_cols[:5]) # limit to top 5
+                    else:
+                        reply += "For example, are you looking for Indoor, Outdoor, or Solar lights?"
+                    return reply
                 
                 # Build clean parameter list for Main Agent
                 clean_params = []
