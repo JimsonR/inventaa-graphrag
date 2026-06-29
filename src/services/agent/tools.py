@@ -73,6 +73,25 @@ def search_products_db(
 
         # 1. Full-Text Search
         if query:
+            query_clean = query.strip().lower()
+            available_cols = AgentConfig.collections if AgentConfig.collections else []
+            available_groups = AgentConfig.category_groups.keys() if hasattr(AgentConfig, "category_groups") and AgentConfig.category_groups else []
+            
+            # Check for exact matches to collections or category groups before applying stop words
+            if not category and not collection:
+                matched_col = next((c for c in available_cols if c.lower() == query_clean), None)
+                if matched_col:
+                    logger.info(f"[QueryIntercept] Query {query_clean!r} exactly matches collection {matched_col!r}. Mapping to collection.")
+                    collection = matched_col
+                    query = None
+                else:
+                    matched_group = next((g for g in available_groups if g.lower() == query_clean), None)
+                    if matched_group:
+                        logger.info(f"[QueryIntercept] Query {query_clean!r} exactly matches category group {matched_group!r}. Mapping to category.")
+                        category = matched_group
+                        query = None
+
+        if query:
             _STOP = set(AgentConfig.brain.get("search_heuristics", {}).get("stop_words", [
                 "led", "light", "lights", "lamp", "lamps", "the", "a", "an", "and", "or", "for", "of", "in", "with", 
                 "by", "from", "lighting", "offers", "offer", "discount", "discounts", "sale", "deal", "deals", 
@@ -156,10 +175,27 @@ def search_products_db(
             "reviews_desc": "ORDER BY p.review_count DESC",
             "relevance": "ORDER BY score DESC"
         }
-        # We handle wattage_asc and wattage_desc in Python after the query
+        # We handle dynamic sort_by in Python after the query
         order_clause = sort_map.get(sort_by_lower, "")
-        if not order_clause and "wattage" not in sort_by_lower:
+        
+        # Check if sort_by maps to a dynamic option (e.g. "wattage_asc" -> "wattage")
+        dynamic_sort_field = None
+        for opt in AgentConfig.product_options:
+            if sort_by_lower.startswith(opt["alias"] + "_"):
+                dynamic_sort_field = opt["alias"]
+                break
+                
+        if not order_clause and not dynamic_sort_field:
             order_clause = "ORDER BY score DESC, p.rating_score DESC" if "lucene_query" in params else "ORDER BY p.rating_score DESC"
+
+        dynamic_returns = []
+        for opt in AgentConfig.product_options:
+            rel = opt["rel_type"]
+            lbl = opt["target_label"]
+            alias = opt["alias"]
+            dynamic_returns.append(f"[(p)-[:{rel}]->(o:{lbl}) | o.name] AS {alias}")
+        
+        dynamic_return_clause = (",\n               ".join(dynamic_returns) + ",") if dynamic_returns else ""
 
         cypher_query += f"""
 WITH p{", score" if "lucene_query" in params else ""}
@@ -172,7 +208,7 @@ RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
        p.installation_url AS installation_url,
        [(p)-[:HAS_WARRANTY]->(w:Warranty) | w.description][0] AS warranty,
        [(p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'replacement' OR toLower(pol.title) CONTAINS 'exchange' | pol.content][0] AS replacement_exchange_policy,
-       [(p)-[:HAS_SPEC]->(s:Spec) WHERE toLower(s.key) CONTAINS 'watt' OR toLower(s.key) CONTAINS 'power' | s.value] AS wattages,
+       {dynamic_return_clause}
        [(p)-[:BELONGS_TO_COLLECTION]->(col2:Collection) | col2.name] AS collections,
        [(p)-[:BELONGS_TO_TENANT]->(t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) | o.text][0] AS global_offers
 """
@@ -201,16 +237,16 @@ RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
             res = AgentConfig.graph.query(relaxed_cypher, params=params)
             
         import re
-        if res and "wattage" in (sort_by or "").lower():
-            def extract_wattage(row):
-                wattages = row.get("wattages") or []
-                if not wattages:
+        if res and dynamic_sort_field:
+            def extract_numerical(row):
+                vals = row.get(dynamic_sort_field) or []
+                if not vals:
                     return float('inf') if "asc" in (sort_by or "").lower() else float('-inf')
-                match = re.search(r'(\d+(?:\.\d+)?)', wattages[0])
+                match = re.search(r'(\d+(?:\.\d+)?)', vals[0])
                 if match:
                     return float(match.group(1))
                 return float('inf') if "asc" in (sort_by or "").lower() else float('-inf')
-            res.sort(key=extract_wattage, reverse="desc" in (sort_by or "").lower())
+            res.sort(key=extract_numerical, reverse="desc" in (sort_by or "").lower())
 
         if not res:
             # ── Fulltext Fallback ─────────────────────────────────────────
@@ -273,7 +309,16 @@ def get_product_details_db(product_name: str):
         lucene_query = " AND ".join(lucene_tokens)
         logger.info(f"ProductDetailsDatabase | product_name={product_name!r} | lucene={lucene_query!r}")
 
-        cypher_query = """
+        dynamic_returns = []
+        for opt in AgentConfig.product_options:
+            rel = opt["rel_type"]
+            lbl = opt["target_label"]
+            alias = opt["alias"]
+            dynamic_returns.append(f"[(p)-[:{rel}]->(o:{lbl}) | o.name] AS {alias}")
+        
+        dynamic_return_clause = (",\n               ".join(dynamic_returns) + ",") if dynamic_returns else ""
+
+        cypher_query = f"""
         CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score
         WHERE p.tenant = $tenant_id OR p.tenant IS NULL
         WITH p, score
@@ -285,8 +330,7 @@ def get_product_details_db(product_name: str):
                [(p)-[:HAS_WARRANTY]->(w:Warranty) | w.description][0] AS warranty_info,
                [(p)-[:HAS_WARRANTY]->(w:Warranty) | w.duration_years][0] AS warranty_duration,
                [(p)-[:HAS_SPEC]->(s:Spec) | s.key + ': ' + s.value] AS specs,
-               [(p)-[:AVAILABLE_IN_WATTAGE]->(wo:WattageOption) | wo.name] AS wattages,
-               [(p)-[:AVAILABLE_IN_COLOR]->(co:ColorOption) | co.name] AS colors,
+               {dynamic_return_clause}
                [(p)-[:BELONGS_TO_COLLECTION]->(col:Collection) | col.name] AS collections,
                [(p)-[:BELONGS_TO_TENANT]->(t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) | o.text][0] AS global_offers
         """
@@ -302,20 +346,13 @@ def get_product_details_db(product_name: str):
         output = f"Product Name: {product.get('name')}\n"
         output += f"Price: Rs. {product.get('price')}\n"
 
-        # Wattage options
-        wattages = [w for w in (product.get('wattages') or []) if w]
-        if wattages:
-            output += f"Available Wattages: {', '.join(sorted(wattages))}\n"
-        else:
-            # Fallback: look in specs for wattage
-            watt_specs = [s for s in (product.get('specs') or []) if 'watt' in s.lower() or 'power' in s.lower()]
-            if watt_specs:
-                output += f"Wattage Info: {'; '.join(watt_specs)}\n"
-
-        # Color options
-        colors = [c for c in (product.get('colors') or []) if c]
-        if colors:
-            output += f"Available Colors: {', '.join(sorted(colors))}\n"
+        # Dynamic Options
+        for opt in AgentConfig.product_options:
+            alias = opt["alias"]
+            values = [v for v in (product.get(alias) or []) if v]
+            if values:
+                display_name = alias.replace("_", " ").title()
+                output += f"Available {display_name}: {', '.join(sorted(values))}\n"
 
         # Collections
         collections = [c for c in (product.get('collections') or []) if c]
@@ -326,7 +363,11 @@ def get_product_details_db(product_name: str):
         if product.get('warranty_info'):
             output += f"Warranty: {product.get('warranty_info')}\n"
         else:
-            output += "Warranty: This product carries Inventaa's standard 1-Year replacement warranty. Contact support to claim.\n"
+            brand_name = AgentConfig.brain.get('tenant', {}).get('name', 'Inventaa')
+            default_warranty = AgentConfig.brain.get('tenant', {}).get('default_warranty')
+            if default_warranty:
+                formatted_warranty = default_warranty.format(brand_name=brand_name)
+                output += f"Warranty: {formatted_warranty}\n"
             
         if product.get('replacement_exchange_policy'):
             output += f"Replacement Policy: {product.get('replacement_exchange_policy')}\n"
@@ -394,7 +435,7 @@ def query_policies(query: str):
                 AgentConfig.general_vector_store = Neo4jVector.from_existing_index(
                     embedding=AgentConfig.embeddings, url=NEO4J_URI, 
                     username=os.getenv("NEO4J_USERNAME"), password=os.getenv("NEO4J_PASSWORD"),
-                    index_name="inventaa_faq_vector", text_node_property="text"
+                    index_name=os.getenv("NEO4J_FAQ_INDEX", "inventaa_faq_vector"), text_node_property="text"
                 )
             res = AgentConfig.general_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
         return res
@@ -447,7 +488,7 @@ def query_product_faqs(query: str):
 def query_general_knowledge(query: str):
     """
     Search blog articles, offers, and general lighting knowledge stored as Chunk nodes.
-    Uses vector search on the inventaa_faq_vector index.
+    Uses vector search on the general knowledge vector index.
     """
     try:
         from langchain_neo4j import Neo4jVector
@@ -458,7 +499,7 @@ def query_general_knowledge(query: str):
             AgentConfig.general_vector_store = Neo4jVector.from_existing_index(
                 embedding=AgentConfig.embeddings, url=NEO4J_URI, 
                 username=os.getenv("NEO4J_USERNAME"), password=os.getenv("NEO4J_PASSWORD"),
-                index_name="inventaa_faq_vector", text_node_property="text"
+                index_name=os.getenv("NEO4J_FAQ_INDEX", "inventaa_faq_vector"), text_node_property="text"
             )
             
         from src.services.agent.context import tenant_context
@@ -524,50 +565,39 @@ def get_tools():
                 "The tool auto-detects category, use case, and features from the query. If the user's long-term memory or context specifies a preference (like a specific category), you could explicitly set the corresponding parameter (e.g. `category` or `feature`) rather than relying purely on the current conversational text. "
                 "CRITICAL: If the user asks to search 'in all collections' or 'across all categories', DO NOT call this tool multiple times. Simply call it ONCE with `category=None` and `collection=None`."
                 "\n\nParameters:"
-                "\n- query (str): ONLY use this for exact PROPER NOUNS representing specific product names or brands (e.g. 'oxana', 'fabra'). DO NOT pass generic words, locations, applications, or features here (like 'pathway', 'walkway', 'garden', 'indoor', 'waterproof'). If you have a generic term, use the `feature` or `use_case` parameters instead and LEAVE THIS EMPTY."
+                "\n- query (str): ONLY use this for exact PROPER NOUNS representing specific product names or brands. DO NOT pass generic words, locations, applications, or features here. If you have a generic term, use the `feature` or `use_case` parameters instead and LEAVE THIS EMPTY."
                 "\n- category (str): explicit collection override."
                 "\n- collection (str): filter by collection name."
-                "\n- collections (list[str]): filter by multiple collections at once (e.g. for a broad category group like 'Outdoor')."
-                f"\n- feature (str): explicit filter for a physical feature. Valid options: {', '.join(AgentConfig.features) if AgentConfig.features else 'waterproof, dimmable'}."
-                f"\n- use_case (str): explicit filter for where the light will be used. Valid options: {', '.join(AgentConfig.use_cases) if AgentConfig.use_cases else 'Garden, Exterior'}."
-                "\n- spec (str): technical spec filter. Examples: 'IP65', '12W', '18W', 'aluminium', 'beam angle'"
-                "\n- min_price / max_price (int): price range in INR (e.g. max_price=10000 for '₹10,000 budget')"
+                "\n- collections (list[str]): filter by multiple collections at once."
+                f"\n- feature (str): explicit filter for a physical feature. Valid options: {', '.join(AgentConfig.features) if AgentConfig.features else ''}."
+                f"\n- use_case (str): explicit filter for where the light will be used. Valid options: {', '.join(AgentConfig.use_cases) if AgentConfig.use_cases else ''}."
+                "\n- spec (str): technical spec filter. Examples: 'IP65', '12W'"
+                "\n- min_price / max_price (int): price range"
                 "\n- sort_by (str): rating_desc, rating_asc, price_asc, price_desc, reviews_desc, wattage_asc, wattage_desc"
                 "\n- limit (int): number of results (default 100)"
-                "\n\nEXAMPLES:"
-                "\n- 'show me waterproof lights for the garden' → query=None, feature='Waterproof', use_case='Garden'"
-                "\n- 'low electricity exterior lights' → query=None, use_case='Exterior', sort_by='wattage_asc'"
-                "\n- 'cheapest solar gate light' → query=None, category='Solar Lights', use_case='Gate-Pillar', sort_by='price_asc'"
-                "\n- 'lights for garden under ₹2000' → query=None, use_case='Garden', max_price=2000"
-                "\n- 'oxana wall light' → query='oxana', category='LED Outdoor Wall Light', use_case=None"
-                "\n- 'lights under ₹10000' → max_price=10000, sort_by='rating_desc'"
-                "\n- 'IP65 rated street lights' → query='street', spec='IP65'"
-                "\n- 'lights for heavy rainfall area' → feature='waterproof'"
-                "\n- 'warm white pathway lights' → query='pathway', feature='warm-white'"
-                "\n- 'energy efficient gate lights' → query='gate', feature='energy-efficient'"
-            ),
+                "\n\nEXAMPLES:\n"
+            ) + AgentConfig.brain.get("tool_descriptions", {}).get("SearchProductsDatabase", ""),
             return_direct=False
         ),
 
         StructuredTool.from_function(
             name="ProductDetailsDatabase",
             func=get_product_details_db,
-            description=(
+            description=AgentConfig.brain.get("tool_descriptions", {}).get(
+                "ProductDetailsDatabase",
                 "Use this when the user asks about ONE specific named product's details: "
                 "warranty, wattage, dimensions, material, IP rating, beam angle, lumens, "
                 "mounting type, colour temperature, or any other technical specification. "
                 "Examples: 'What is the warranty of the Artoo light?', "
-                "'Is the Athena light available in warm white?', "
-                "'What material is the Tacita fixture made of?', "
-                "'What are the dimensions of the Mini Olivia light?'"
+                "'Is the Athena light available in warm white?'"
             ),
             return_direct=False
         ),
         Tool(
             name="PolicyVectorDatabase",
             func=query_policies,
-            description=(
-                "Use this for company-wide operational policies: "
+            description=AgentConfig.brain.get("tool_descriptions", {}).get(
+                "PolicyVectorDatabase",
                 "Use this for company-wide operational policies: "
                 "shipping, delivery time, delivery charges, order tracking, return policy, "
                 "replacement process, exchange process, warranty claim procedure, "
@@ -579,39 +609,25 @@ def get_tools():
         Tool(
             name="ProductAdviceDatabase",
             func=query_product_faqs,
-            description=(
+            description=AgentConfig.brain.get("tool_descriptions", {}).get(
+                "ProductAdviceDatabase",
                 "Use this for general product FAQs, installation guidance, and suitability advice "
                 "NOT tied to a specific named product: "
                 "'Is installation easy?', 'Can I install it myself?', "
                 "'Does the package include mounting hardware?', "
                 "'Can it be connected to a timer or smart switch?', "
-                "'Is it suitable for coastal areas?', "
-                "'How long do LEDs last?', 'What is the expected lifespan?', "
-                "'Will switching to LED reduce electricity bill?', "
-                "'Which is better: warm white or cool white?', "
-                "'Which light requires the least maintenance?', "
-                "'Can this be used for commercial spaces?'"
+                "'Is it suitable for coastal areas?'"
             )
         ),
         Tool(
             name="GeneralKnowledgeDatabase",
             func=query_general_knowledge,
-            description=(
+            description=AgentConfig.brain.get("tool_descriptions", {}).get(
+                "GeneralKnowledgeDatabase",
                 "Use this to search for active offers, discounts, promotions, and coupon codes. "
                 "Also use this for educational, comparison, and 'how-to' questions about lighting concepts "
                 "that are NOT about a specific product and NOT a company policy. "
-                f"This searches {AgentConfig.brain.get('tenant', {}).get('name', 'Inventaa')}'s blog articles and knowledge base. "
-                "Examples: "
-                "'Are there any offers on solar lights?', "
-                "'Wave-Free LED Panel Lights vs Traditional LED Panel Lights', "
-                "'What is the difference between bollard and pathway lights?', "
-                "'How to choose outdoor lighting?', "
-                "'Benefits of solar lights', "
-                "'What is colour rendering index (CRI)?', "
-                "'How many lumens do I need for outdoor lighting?', "
-                "'LED vs fluorescent lights comparison', "
-                "'How to reduce electricity bill with LED lighting', "
-                "'What is IP rating in outdoor lights?'"
-            )
+                "Examples: 'Are there any offers on solar lights?', 'How to choose outdoor lighting?'"
+            ).format(brand_name=AgentConfig.brain.get('tenant', {}).get('name', 'Inventaa'))
         )
     ]

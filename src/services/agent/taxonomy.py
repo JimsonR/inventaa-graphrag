@@ -119,7 +119,7 @@ def extract_taxonomy_parameters(query_text: str, candidate_tags: dict) -> Taxono
     """
     if not candidate_tags:
         return TaxonomyExtraction()
-        
+
     try:
         structured_llm = AgentConfig.llm.with_structured_output(TaxonomyExtraction)
         
@@ -128,10 +128,11 @@ def extract_taxonomy_parameters(query_text: str, candidate_tags: dict) -> Taxono
             f"Candidate Tags from Vector DB:\n{candidate_tags}\n\n"
             "Task: Act as a strict filter. Read the candidate tags and select the exact correct category, use_case, or feature that matches the user's query.\n"
             "Rules:\n"
-            "1. You MUST pick the exact string from the Candidate Tags. Do not invent tags.\n"
-            "2. Reject false-positives (e.g. if query says 'outdoor wall' and vector db suggests 'indoor-ceiling', ignore 'indoor-ceiling').\n"
-            "3. If multiple categories (collections) apply equally to a broad query, DO NOT guess. Set clarify=True.\n"
-            "4. Return null for fields that have no perfect match."
+            "1. You MUST pick the exact string from the Candidate Tags provided. Do not invent tags.\n"
+            "2. If the user's query exactly or near-exactly matches a Candidate Tag (e.g. 'outdoor led gate lamp lights' -> 'Outdoor LED Gate Lamp Lights'), select it immediately and DO NOT set clarify=True.\n"
+            "3. Reject false-positives (e.g. if query says 'outdoor wall' and lists suggest 'indoor ceiling', ignore it).\n"
+            "4. If and only if the query is very broad (e.g. 'lights') and multiple Candidate Tags apply equally without any one being a clear best match, set clarify=True.\n"
+            "5. Return null for fields that have no perfect or clear match."
         )
         
         result = structured_llm.invoke(prompt)

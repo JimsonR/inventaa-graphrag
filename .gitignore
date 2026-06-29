@@ -20,3 +20,4 @@ test_agent.py
 debug_neo4j_delivery.py
 debug_neo4j_delivery_specifics.py
 embed_policies.py
+.test_venv

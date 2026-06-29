@@ -117,7 +117,7 @@ class IntentClassification(BaseModel):
     )
     is_broad_navigation: bool = Field(
         False, 
-        description="True ONLY if the user is asking to browse a TOP-LEVEL category like 'outdoor', 'indoor', 'solar', or 'all products' (e.g. 'I want to buy outdoor lights', 'show me everything'). FALSE if they are asking for anything else, including sub-categories like 'gate', 'wall', 'commercial', 'garden', or specific features."
+        description="True ONLY if the user is asking to browse a generic TOP-LEVEL category with NO OTHER SPECIFICS (e.g. 'I want to buy outdoor lights', 'show me indoor lights', 'show me everything'). FALSE if the query contains ANY specific product types, sub-categories, or features (e.g. 'outdoor gate lights', 'indoor ceiling lights', 'solar bollards'). If they mention a specific type like 'gate', 'wall', 'commercial', or 'garden', this MUST BE FALSE."
     )
     broad_category_group: Optional[str] = Field(
         None, 

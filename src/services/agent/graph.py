@@ -110,6 +110,23 @@ def build_graph(system_prompt: str, tools: list):
         is_direct_product_eval = isinstance(last_msg, ToolMessage) and last_msg.name == "SearchProductsDatabase"
 
         if is_direct_product_eval and product_search_result:
+            try:
+                # Minify context for the LLM Judge to save tokens and prevent distraction
+                parsed_res = json.loads(product_search_result)
+                if isinstance(parsed_res, list):
+                    minified_res = []
+                    for item in parsed_res:
+                        minified_res.append({
+                            "name": item.get("name"),
+                            "collections": item.get("collections"),
+                            "wattages": item.get("wattages")
+                        })
+                    judging_context = json.dumps(minified_res, ensure_ascii=False)
+                else:
+                    judging_context = product_search_result
+            except Exception:
+                judging_context = product_search_result
+                
             brand_name = AgentConfig.brain.get("tenant", {}).get("name", "Inventaa")
             brand_desc = AgentConfig.brain.get("tenant", {}).get("description", "an Indian LED lighting brand")
             prompt_template = AgentConfig.brain.get("prompts", {}).get(
@@ -123,7 +140,7 @@ def build_graph(system_prompt: str, tools: list):
                 brand_name=brand_name,
                 brand_description=brand_desc,
                 user_query=user_query,
-                product_search_result=product_search_result
+                product_search_result=judging_context
             )
         else:
             last_ai_msg = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
@@ -321,7 +338,6 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                         translation_embedding = AgentConfig.embeddings.embed_query(translation)
                     else:
                         translation_embedding = query_embedding
-                    
                     # Fetch raw candidates via vector similarity
                     from src.services.agent.taxonomy import fetch_taxonomy_candidates, extract_taxonomy_parameters
                     raw_candidates = fetch_taxonomy_candidates(translation_embedding)

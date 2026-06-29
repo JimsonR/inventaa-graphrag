@@ -21,8 +21,13 @@ class AgentConfig:
     features = []
     category_groups = {}  # {"Outdoor": ["LED Outdoor Wall Light", ...], ...}
     top_level_groups = []  # ["Outdoor", "Indoor", "Solar"]
+    product_options = [] # Dynamic options like [{'rel_type': 'AVAILABLE_IN_WATTAGE', 'target_label': 'WattageOption', 'alias': 'wattage'}, ...]
+    
     # YAML Configuration
     brain = {}
+    
+    # Dependencies
+    memory_provider = None
 
     @classmethod
     def initialize(cls):
@@ -100,7 +105,45 @@ class AgentConfig:
             
             logger.info(f"Loaded schema dynamically: {len(cls.collections)} Collections, {len(cls.use_cases)} UseCases, {len(cls.features)} Features, {len(cls.category_groups)} CategoryGroups ({len(cls.top_level_groups)} top-level)")
             
-            # 6. Sync taxonomy to vector database for semantic parameter mapping
+            # 6. Discover Dynamic Product Options (e.g., AVAILABLE_IN_COLOR)
+            try:
+                rel_query = """
+                MATCH (p:Product)-[r]->(target)
+                WHERE type(r) STARTS WITH 'AVAILABLE_IN_'
+                RETURN DISTINCT type(r) AS rel_type, labels(target)[0] AS target_label
+                """
+                rel_res = cls.graph.query(rel_query)
+                cls.product_options = []
+                for row in rel_res:
+                    rel_type = row.get("rel_type")
+                    if not rel_type: continue
+                    # Extract the attribute name from the relationship, e.g. AVAILABLE_IN_WATTAGE -> wattage
+                    alias = rel_type.replace("AVAILABLE_IN_", "").lower()
+                    cls.product_options.append({
+                        "rel_type": rel_type,
+                        "target_label": row.get("target_label"),
+                        "alias": alias
+                    })
+                logger.info(f"Discovered {len(cls.product_options)} dynamic product options: {[o['alias'] for o in cls.product_options]}")
+            except Exception as e:
+                logger.error(f"Failed to discover dynamic product options: {e}")
+
+            # 7. Initialize Memory Provider
+            from src.services.agent.memory import SupabaseMemoryProvider, InMemoryProvider
+            supabase_url = os.getenv("SUPABASE_URL")
+            supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
+            if supabase_url and supabase_key:
+                try:
+                    cls.memory_provider = SupabaseMemoryProvider(supabase_url, supabase_key)
+                    logger.info("Initialized SupabaseMemoryProvider.")
+                except Exception as e:
+                    logger.error(f"Failed to initialize SupabaseMemoryProvider: {e}. Falling back to InMemoryProvider.")
+                    cls.memory_provider = InMemoryProvider()
+            else:
+                cls.memory_provider = InMemoryProvider()
+                logger.info("Initialized InMemoryProvider (no SUPABASE credentials found).")
+
+            # 7. Sync taxonomy to vector database for semantic parameter mapping
             from src.services.agent.taxonomy import sync_taxonomy
             sync_taxonomy()
             
