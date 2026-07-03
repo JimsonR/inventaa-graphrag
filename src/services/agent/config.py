@@ -22,6 +22,8 @@ class AgentConfig:
     category_groups = {}  # {"Outdoor": ["LED Outdoor Wall Light", ...], ...}
     top_level_groups = []  # ["Outdoor", "Indoor", "Solar"]
     product_options = [] # Dynamic options like [{'rel_type': 'AVAILABLE_IN_WATTAGE', 'target_label': 'WattageOption', 'alias': 'wattage'}, ...]
+    collection_to_skus = {} # {"Solar Lights": ["32a-s663", ...], ...}
+    collection_to_sqlite_cats = {} # {"Solar Lights": {"Solar Lights"}, ...}
     
     # YAML Configuration
     brain = {}
@@ -95,13 +97,35 @@ class AgentConfig:
                 cls.use_cases = sorted(row.get("ucs", []))
                 cls.features = sorted(row.get("feats", []))    
             
-            # Load hand-curated category groups for browse/navigation queries
+            # Load Level 1 category groups (Outdoor, Indoor, Solar) and their Level 2 collections
             group_res = cls.graph.query("""
                 MATCH (cg:CategoryGroup)-[:CONTAINS]->(c:Collection)
+                WHERE cg.is_top_level = true
                 RETURN cg.name AS group_name, cg.is_top_level AS is_top_level, collect(c.name) AS collections
             """)
             cls.category_groups = {r['group_name']: r['collections'] for r in group_res}
-            cls.top_level_groups = [r['group_name'] for r in group_res if r.get('is_top_level')]
+            cls.top_level_groups = sorted(list(cls.category_groups.keys()))
+            
+            # Dynamically map Neo4j collections to SKUs and SQLite categories via BELONGS_TO_COLLECTION
+            try:
+                col_sku_res = cls.graph.query("""
+                    MATCH (c:Collection)<-[:BELONGS_TO_COLLECTION]-(p:Product)
+                    RETURN c.name AS collection, collect(DISTINCT toLower(p.sku)) AS skus
+                """)
+                cls.collection_to_skus = {r['collection']: r['skus'] for r in col_sku_res if r.get('collection')}
+                
+                from src.db.database import get_session
+                from src.db.models import Product
+                from sqlalchemy import func
+                with get_session() as session:
+                    for col, skus in cls.collection_to_skus.items():
+                        if not skus: continue
+                        prods = session.query(Product).filter(func.lower(Product.sku).in_(skus)).all()
+                        sqlite_cats = {p.categories for p in prods if p.categories}
+                        cls.collection_to_sqlite_cats[col] = sqlite_cats
+                logger.info(f"Dynamically mapped {len(cls.collection_to_sqlite_cats)} Neo4j collections to SQLite categories via graph.")
+            except Exception as e:
+                logger.warning(f"Could not dynamically map Neo4j collections to SQLite categories: {e}")
             
             logger.info(f"Loaded schema dynamically: {len(cls.collections)} Collections, {len(cls.use_cases)} UseCases, {len(cls.features)} Features, {len(cls.category_groups)} CategoryGroups ({len(cls.top_level_groups)} top-level)")
             

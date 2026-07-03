@@ -78,7 +78,7 @@ def _get_pinecone_index():
         _pinecone_index = pc.Index(index_name)
     return _pinecone_index
 
-def fetch_taxonomy_candidates(query_embedding: list, threshold: float = 0.85) -> dict:
+def fetch_taxonomy_candidates(query_embedding: list, threshold: float = 0.80) -> dict:
     """
     Queries the taxonomy-cache and returns matched tags grouped by type.
     Example return: {'feature': ['waterproof'], 'use_case': ['gate-pillar', 'garden-pathway']}

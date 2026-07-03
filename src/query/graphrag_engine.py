@@ -42,14 +42,6 @@ STOPWORDS = {
     "watt", "watts", "volt", "volts", "meter", "meters", "inch", "inches", "rs", "rupee", "rupees", "price", "under", "below", "above", "range", "cost"
 }
 
-# Known product categories in the SQLite catalog — injected into intent classifier for exact mapping
-SQLITE_CATEGORIES = "\n".join([
-    "Gate & Pillar Lights", "Indoor & Ceiling Lights", "Solar Lights",
-    "Outdoor Wall Lights", "Bollard & Garden Lights", "Divine & Temple Lights",
-    "Street Lights", "Pathway & Step Lights", "General Purpose Lights",
-    "Flood Lights", "Panel Lights", "Bulkhead Lights", "Outdoor Commercial Lights"
-])
-
 class QueryIntent(str, Enum):
     FIND_PRODUCT = "find_product"
     GET_PRODUCT_INFO = "get_product_info"
@@ -77,10 +69,20 @@ Classify the user's query into exactly one of these intents:
 - get_advice: User asks general lighting FAQ, installation advice, or how to choose lighting.
 - unknown: None of the above.
 
-Also extract:
-- category_keywords: list of product categories or use cases mentioned (e.g., ["Gate & Pillar Lights", "indoor", "solar", "wall", "ceiling"])
+Also extract structured filters and entities:
+- category_keywords: list of product categories or collections mentioned (e.g., ["Gate & Pillar Lights", "Divine & Temple Lights", "Indoor & Ceiling Lights", "Solar Lights", "Outdoor Commercial Lights"])
 - feature_keywords: list of features or specs mentioned (e.g., ["waterproof", "IP65", "motion-sensor", "warm white", "aluminium"])
 - product_name: specific product name or SKU if mentioned (null otherwise)
+- filters: structured dictionary of extracted constraints:
+  {
+    "category": string or null (e.g. "Divine & Temple Lights", "Flood Lights"),
+    "application": string or null (e.g. "Outdoor", "Indoor", "Garden"),
+    "segment": string or null (e.g. "Commercial", "Residential", "Temple"),
+    "manufacturer": string or null (e.g. "Inventaa"),
+    "ip_rating": string or null (e.g. "IP65", "IP66"),
+    "wattage": string or number or null (e.g. "12W" or 12),
+    "color": string or null (e.g. "Cool White", "Warm White")
+  }
 - preferences: dict of any preferences (e.g., {"min_price": 500, "max_price": 2000, "wattage": 12, "color": "Cool White"})
 
 Respond ONLY with valid JSON. Example:
@@ -89,6 +91,15 @@ Respond ONLY with valid JSON. Example:
   "category_keywords": ["Gate & Pillar Lights"],
   "feature_keywords": [],
   "product_name": null,
+  "filters": {
+    "category": "Gate & Pillar Lights",
+    "application": "Outdoor",
+    "segment": null,
+    "manufacturer": null,
+    "ip_rating": null,
+    "wattage": null,
+    "color": null
+  },
   "preferences": {}
 }"""
 
@@ -121,7 +132,7 @@ class GraphRAGEngine:
             # Inject taxonomy hints so the LLM knows our exact category/feature vocabulary
             taxonomy_section = ""
             if taxonomy_hints:
-                taxonomy_section = "\n\nKNOWN TAXONOMY (use these exact names when populating category_keywords and feature_keywords):"
+                taxonomy_section = "\n\nCANDIDATE TAXONOMY HINTS (CRITICAL RULE: Select any category/collection below that matches the user's explicit request. If the user asks for a category or product type not listed below, extract the user's exact category words into category_keywords. Do NOT blindly copy unrelated candidate categories into category_keywords):"
                 if taxonomy_hints.get("category"):
                     taxonomy_section += f"\n  Matched Categories: {taxonomy_hints['category']}"
                 if taxonomy_hints.get("use_case"):
@@ -133,10 +144,10 @@ class GraphRAGEngine:
             if taxonomy_section:
                 system_prompt += taxonomy_section
             
-            # Also inject the known SQLite categories so the LLM can map to exact names
-            sqlite_cats = SQLITE_CATEGORIES
-            if sqlite_cats:
-                system_prompt += f"\n\nAVAILABLE PRODUCT CATEGORIES IN DATABASE (use these exact category names in category_keywords when applicable):\n{sqlite_cats}"
+            # Also inject the dynamically discovered categories so the LLM can map to exact names
+            dyn_cats = "\n".join(AgentConfig.collections) if AgentConfig.collections else ""
+            if dyn_cats:
+                system_prompt += f"\n\nAVAILABLE PRODUCT COLLECTIONS IN DATABASE (Select ONLY the exact collection matching the user's query; do not list collections that were not requested):\n{dyn_cats}"
             
             messages = [
                 SystemMessage(content=system_prompt),
@@ -144,6 +155,7 @@ class GraphRAGEngine:
             ]
             response = await asyncio.to_thread(AgentConfig.llm.invoke, messages)
             content = response.content.strip()
+            logger.info(f"[DEBUG-LLM] Intent Classifier raw JSON response:\n{content}")
             # Clean markdown code block if present
             if content.startswith("```json"):
                 content = content[7:]
@@ -157,6 +169,7 @@ class GraphRAGEngine:
                 "category_keywords": [],
                 "feature_keywords": [],
                 "product_name": None,
+                "filters": {},
                 "preferences": {},
             }
 
@@ -174,6 +187,7 @@ class GraphRAGEngine:
             if tokens:
                 # Use Neo4j's Lucene fulltext search index for ultra-fast fuzzy matching
                 lucene_query = " OR ".join([f"{t}~" for t in tokens[:6]])
+                logger.info(f"[DEBUG-NEO4J] Executing Lucene fulltext search with query: '{lucene_query}'")
                 cypher = """
                 CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_q) YIELD node AS p, score
                 RETURN DISTINCT p.sku AS sku, p.name AS name, score AS graph_score
@@ -183,6 +197,7 @@ class GraphRAGEngine:
                 try:
                     res = AgentConfig.graph.query(cypher, params={"lucene_q": lucene_query})
                     if res:
+                        logger.info(f"[DEBUG-NEO4J] Lucene search matched {len(res)} nodes. Top SKUs: {[r.get('sku') for r in res[:5]]}")
                         return res
                 except Exception as e:
                     logger.warning(f"Lucene fulltext search failed: {e}")
@@ -231,7 +246,9 @@ class GraphRAGEngine:
             cypher_parts.append("RETURN DISTINCT p.sku AS sku, p.name AS name, 1.0 AS graph_score LIMIT 15")
             cypher = "\n".join(cypher_parts)
             
+            logger.info(f"[DEBUG-NEO4J] Executing relational graph traversal with params: {params}")
             res = AgentConfig.graph.query(cypher, params=params)
+            logger.info(f"[DEBUG-NEO4J] Relational traversal matched {len(res) if res else 0} nodes. Top SKUs: {[r.get('sku') for r in (res or [])[:5]]}")
             return res if res else []
         except Exception as e:
             logger.error(f"Neo4j graph search error: {e}")
@@ -261,6 +278,7 @@ class GraphRAGEngine:
 
             # 3. For product search, search product FAQs to find matching product URLs/SKUs
             if AgentConfig.product_faq_vector_store:
+                logger.info(f"[DEBUG-VECTOR] Executing similarity search over product FAQ vector store for query: '{query}'")
                 docs = AgentConfig.product_faq_vector_store.similarity_search_with_score(query, k=5)
                 for doc, score in docs:
                     # Extract product URL from metadata if available
@@ -270,29 +288,95 @@ class GraphRAGEngine:
                     if url and "/products/" in url:
                         sku_slug = url.split("/products/")[-1].strip("/")
                         results.append({"type": "product_vector", "sku_slug": sku_slug, "text": doc.page_content, "score": score})
+                logger.info(f"[DEBUG-VECTOR] FAQ vector search matched {len(results)} product references. Top slugs: {[r.get('sku_slug') for r in results[:5]]}")
             return results
         except Exception as e:
             logger.error(f"Vector search error: {e}")
             return []
 
-    async def retrieve(self, query: str, intent_data: dict) -> tuple[list[dict], list[dict]]:
-        """Parallel retrieval from Neo4j Graph and Vector Stores."""
+    def _text_search(self, intent_data: dict, query: str) -> list[dict]:
+        """Synchronous Text/SQL Keyword search across SQLite catalog using structured filters and tokens."""
+        try:
+            filters = intent_data.get("filters", {}) or {}
+            cats = intent_data.get("category_keywords", []) or []
+            feats = intent_data.get("feature_keywords", []) or []
+            prod_name = intent_data.get("product_name")
+
+            # Combine category from filters and category_keywords
+            cat_filter = filters.get("category")
+            all_cats = list(set([c for c in cats if c] + ([cat_filter] if cat_filter else [])))
+
+            # Extract text tokens
+            raw_text = f"{query} {prod_name or ''} {' '.join(all_cats)} {' '.join(feats)} {filters.get('application') or ''} {filters.get('segment') or ''}"
+            tokens = [w.lower() for w in re.findall(r"\b[a-zA-Z0-9-]{2,}\b", raw_text) if w.lower() not in STOPWORDS]
+
+            with get_session() as session:
+                q = session.query(Product)
+
+                # If specific category or application/segment filter is present
+                if all_cats:
+                    cat_conds = [
+                        or_(
+                            Product.categories.ilike(f"%{c}%"),
+                            Product.use_cases.ilike(f"%{c}%"),
+                            Product.description.ilike(f"%{c}%")
+                        )
+                        for c in all_cats
+                    ]
+                    q = q.filter(or_(*cat_conds))
+
+                # Match tokens across product fields
+                if tokens:
+                    token_conds = []
+                    for t in tokens[:6]:
+                        token_conds.append(or_(
+                            Product.name.ilike(f"%{t}%"),
+                            Product.sku.ilike(f"%{t}%"),
+                            Product.categories.ilike(f"%{t}%"),
+                            Product.features.ilike(f"%{t}%"),
+                            Product.use_cases.ilike(f"%{t}%"),
+                            Product.color_options.ilike(f"%{t}%"),
+                            Product.wattage_options.ilike(f"%{t}%")
+                        ))
+                    if token_conds and not all_cats:
+                        q = q.filter(or_(*token_conds))
+
+                # Check price preferences
+                prefs = intent_data.get("preferences", {}) or {}
+                max_p = prefs.get("max_price")
+                if max_p and isinstance(max_p, (int, float)):
+                    q = q.filter(Product.price_num <= max_p, Product.price_num > 0)
+                min_p = prefs.get("min_price")
+                if min_p and isinstance(min_p, (int, float)):
+                    q = q.filter(Product.price_num >= min_p)
+
+                logger.info(f"[DEBUG-TEXT/SQL] Executing SQLite filter query | Categories: {all_cats} | Tokens: {tokens[:6]} | Price range: {min_p} - {max_p}")
+                prods = q.order_by(Product.rating_score.desc()).limit(15).all()
+                logger.info(f"[DEBUG-TEXT/SQL] SQLite filter query matched {len(prods)} products. Top SKUs: {[p.sku for p in prods[:5]]}")
+                return [{"type": "text", "sku": p.sku, "name": p.name, "score": 1.0} for p in prods]
+        except Exception as e:
+            logger.error(f"Text/SQL search error: {e}")
+            return []
+
+    async def retrieve(self, query: str, intent_data: dict) -> tuple[list[dict], list[dict], list[dict]]:
+        """Parallel retrieval from Neo4j Graph (Lucene), Vector Store (BM25/Semantic), and SQLite (Text/SQL)."""
         vector_task = asyncio.create_task(asyncio.to_thread(self._vector_search, intent_data, query))
         graph_task = asyncio.create_task(asyncio.to_thread(self._graph_search, intent_data, query))
+        text_task = asyncio.create_task(asyncio.to_thread(self._text_search, intent_data, query))
 
-        vector_results, graph_results = await asyncio.gather(vector_task, graph_task)
-        return vector_results, graph_results
+        vector_results, graph_results, text_results = await asyncio.gather(vector_task, graph_task, text_task)
+        return vector_results, graph_results, text_results
 
-    def _fuse_results(self, vector_results: list[dict], graph_results: list[dict], n: int = 8) -> tuple[list[str], list[str]]:
+    def _fuse_results(self, vector_results: list[dict], graph_results: list[dict], text_results: list[dict], n: int = 8) -> tuple[list[str], list[str]]:
         """
-        Reciprocal Rank Fusion (RRF) of vector + graph results.
+        Reciprocal Rank Fusion (RRF) across Vector/BM25 + Graph/Lucene + Text/SQL results.
         Returns (top_skus_to_hydrate, non_product_contexts).
         """
         scores: dict[str, float] = {}
         non_product_contexts: list[str] = []
         k = 60  # RRF constant
 
-        # Process Vector Results
+        # Process Vector / BM25 Results
         for rank, r in enumerate(vector_results):
             rtype = r.get("type")
             if rtype in ("policy", "faq"):
@@ -302,50 +386,26 @@ class GraphRAGEngine:
                 if slug:
                     scores[slug.lower()] = scores.get(slug.lower(), 0) + 1 / (k + rank + 1)
 
-        # Process Graph Results
+        # Process Graph / Lucene Results
         for rank, r in enumerate(graph_results):
             sku = r.get("sku")
             if sku:
                 scores[sku.lower()] = scores.get(sku.lower(), 0) + 1 / (k + rank + 1)
 
+        # Process Text / SQL Results
+        for rank, r in enumerate(text_results):
+            sku = r.get("sku")
+            if sku:
+                scores[sku.lower()] = scores.get(sku.lower(), 0) + 1 / (k + rank + 1)
+
         sorted_skus = sorted(scores.keys(), key=lambda x: scores[x], reverse=True)
-        return sorted_skus[:n], non_product_contexts
+        top_n = sorted_skus[:n]
+        logger.info(f"[DEBUG-RRF] Fused ranks across 3 channels. Top SKUs: {top_n} | Scores: {{k: round(scores[k], 4) for k in top_n}}")
+        return top_n, non_product_contexts
 
     def _hydrate_from_sqlite(self, skus: list[str], preferences: dict, query: str = "", category_keywords: list[str] = None) -> list[dict]:
-        """SQL Hydration step: Fetch authoritative product details, prices, and specs from SQLite."""
-        # Prioritize exact keyword matches from SQLite catalog directly across categories, features, and specs
-        if query:
-            tokens = [w.lower() for w in re.findall(r"\b[a-zA-Z0-9-]{2,}\b", query) if w.lower() not in STOPWORDS]
-            if tokens:
-                with get_session() as session:
-                    conds = [
-                        or_(
-                            Product.name.ilike(f"%{t}%"),
-                            Product.sku.ilike(f"%{t}%"),
-                            Product.categories.ilike(f"%{t}%"),
-                            Product.features.ilike(f"%{t}%"),
-                            Product.use_cases.ilike(f"%{t}%"),
-                            Product.color_options.ilike(f"%{t}%"),
-                            Product.wattage_options.ilike(f"%{t}%")
-                        )
-                        for t in tokens
-                    ]
-                    q = session.query(Product).filter(*conds)
-                    if category_keywords:
-                        cat_conds = [
-                            or_(
-                                Product.categories.ilike(f"%{c}%"),
-                                Product.use_cases.ilike(f"%{c}%"),
-                                Product.description.ilike(f"%{c}%")
-                            )
-                            for c in category_keywords
-                        ]
-                        q = q.filter(or_(*cat_conds))
-                    matched_prods = q.limit(10).all()
-                    for p in matched_prods:
-                        if p.sku.lower() not in [s.lower() for s in skus]:
-                            skus.insert(0, p.sku.lower())
-
+        """SQL Hydration step: Fetch authoritative product details, prices, and specs from SQLite based on RRF rank."""
+        logger.info(f"[DEBUG-HYDRATE] Hydrating SKUs from SQLite: {skus} | Category constraints: {category_keywords}")
         if not skus:
             # If no specific SKUs ranked, fetch top rated products from SQL matching preferences
             with get_session() as session:
@@ -383,10 +443,23 @@ class GraphRAGEngine:
                     cat_match = False
                     for c_kw in category_keywords:
                         c_clean = c_kw.lower().strip()
-                        if c_clean in prod.categories.lower() or prod.categories.lower() in c_clean:
+                        if prod.categories and (c_clean in prod.categories.lower() or prod.categories.lower() in c_clean):
                             cat_match = True
-                        elif prod.use_cases and c_clean in prod.use_cases.lower() and not any(noisy in prod.categories.lower() for noisy in ["gate", "outdoor", "street", "bollard", "solar"]):
+                        elif prod.use_cases and c_clean in prod.use_cases.lower() and not any(noisy in (prod.categories or "").lower() for noisy in ["gate", "outdoor", "street", "bollard", "solar"]):
                             cat_match = True
+                        else:
+                            # Dynamically check if product's SQLite category matches Neo4j collection mapping
+                            for col_name, sqlite_cats in AgentConfig.collection_to_sqlite_cats.items():
+                                if (c_clean == col_name.lower() or c_clean in col_name.lower() or col_name.lower() in c_clean) and prod.categories in sqlite_cats:
+                                    cat_match = True
+                                    break
+                            if not cat_match:
+                                # Also check category groups
+                                for group_name, col_names in AgentConfig.category_groups.items():
+                                    if c_clean == group_name.lower() or c_clean in group_name.lower():
+                                        if any(prod.categories in AgentConfig.collection_to_sqlite_cats.get(col, set()) for col in col_names):
+                                            cat_match = True
+                                            break
                     if not cat_match:
                         continue
 
@@ -508,7 +581,9 @@ Always include product prices in ₹ and direct product URLs when recommending p
                 HumanMessage(content=prompt)
             ]
             response = await asyncio.to_thread(AgentConfig.llm.invoke, messages)
-            return response.content.strip()
+            res_text = response.content.strip()
+            logger.info(f"[DEBUG-LLM] Synthesized final response:\n{res_text}")
+            return res_text
         except Exception as e:
             logger.error(f"Response synthesis error: {e}")
             return f"Here are the lighting details matching your query:\n\n{context}"
@@ -525,9 +600,24 @@ Always include product prices in ₹ and direct product URLs when recommending p
                 cat_conds.append(Product.categories.ilike(f"%{kw_lower}%"))
                 cat_conds.append(Product.use_cases.ilike(f"%{kw_lower}%"))
                 cat_conds.append(Product.name.ilike(f"%{kw_lower}%"))
+                
+                # Dynamically map Neo4j collection keywords to SQLite categories via graph schema
+                for col_name, sqlite_cats in AgentConfig.collection_to_sqlite_cats.items():
+                    if kw_lower == col_name.lower() or kw_lower in col_name.lower() or col_name.lower() in kw_lower:
+                        for sc in sqlite_cats:
+                            cat_conds.append(Product.categories.ilike(f"%{sc}%"))
+                
+                for group_name, col_names in AgentConfig.category_groups.items():
+                    if kw_lower == group_name.lower() or kw_lower in group_name.lower():
+                        for col_name in col_names:
+                            for sc in AgentConfig.collection_to_sqlite_cats.get(col_name, set()):
+                                cat_conds.append(Product.categories.ilike(f"%{sc}%"))
             
             if cat_conds:
+                logger.info(f"[DEBUG-SQLITE-BROWSE] Executing category browse query with keywords: {category_keywords}")
                 q = q.filter(or_(*cat_conds))
+            else:
+                logger.info(f"[DEBUG-SQLITE-BROWSE] No category filter conditions generated for keywords: {category_keywords}")
             
             # Apply price preferences
             max_p = preferences.get("max_price")
@@ -538,6 +628,8 @@ Always include product prices in ₹ and direct product URLs when recommending p
                 q = q.filter(Product.price_num >= min_p)
             
             products = q.order_by(Product.rating_score.desc()).all()
+            matched_summary = [f"'{p.name}' (SKU: {p.sku}, Cat: '{p.categories}', UseCases: '{p.use_cases}')" for p in products[:5]]
+            logger.info(f"[DEBUG-SQLITE-BROWSE] Matched {len(products)} total products. Top 5 samples: {matched_summary}")
             
             hydrated = []
             for prod in products:
@@ -600,14 +692,46 @@ Always include product prices in ₹ and direct product URLs when recommending p
         intent = QueryIntent(intent_data.get("intent", "unknown"))
         logger.info(f"Classified Intent: {intent} | Keywords: {intent_data.get('category_keywords')} {intent_data.get('feature_keywords')}")
 
-        # Step 1.5: If BROWSE_CATEGORY, short-circuit to full category listing from SQLite
         if intent == QueryIntent.BROWSE_CATEGORY:
             cat_kws = intent_data.get("category_keywords", [])
-            # Only enrich with taxonomy use_cases (not raw category matches which are too noisy)
-            if taxonomy_hints.get("use_case"):
-                for uc in taxonomy_hints["use_case"]:
-                    if uc not in cat_kws:
-                        cat_kws.append(uc)
+            filters = intent_data.get("filters", {}) or {}
+            # Only enrich with structured filter category
+            if filters.get("category") and filters["category"] not in cat_kws:
+                cat_kws.append(filters["category"])
+            
+            # Top-level category navigation should ONLY trigger when the query is explicitly asking for broad level-1 category groups (Outdoor, Indoor, Solar) without specifying a particular sub-category or collection name.
+            is_top_level = not filters.get("category") and (
+                filters.get("application") in ["Outdoor", "Indoor", "Solar"]
+                or any(k.strip().lower() in [g.lower() for g in AgentConfig.top_level_groups] or k.strip().lower() in ['outdoor lighting', 'indoor lighting', 'solar lighting', 'lighting', 'lights'] for k in cat_kws)
+            )
+            if is_top_level:
+                logger.info(f"Detected TOP-LEVEL category navigation query for keywords: {cat_kws} | Application: {filters.get('application')}")
+                app = str(filters.get("application") or "").lower()
+                
+                lines = ["AVAILABLE SPECIALIZED COLLECTIONS IN NEO4J (Do NOT list individual products/SKUs or prices; instead, introduce these available collections clearly and ask the customer which collection they would like to explore):"]
+                matched_groups = [g for g in AgentConfig.top_level_groups if g.lower() in app or any(g.lower() in k.lower() for k in cat_kws)]
+                if not matched_groups:
+                    matched_groups = AgentConfig.top_level_groups or list(AgentConfig.category_groups.keys())
+                for g in matched_groups:
+                    cols = AgentConfig.category_groups.get(g, [])
+                    if cols:
+                        lines.append(f"\n{g} Collections:")
+                        for c in cols:
+                            lines.append(f"• {c}")
+                
+                context_text = "\n".join(lines)
+                response = await self.synthesize_response(user_query, context_text, intent_data, history_context=history_context)
+                
+                # Save to memory
+                if session_id and AgentConfig.memory_provider and hasattr(AgentConfig.memory_provider, "add_message"):
+                    try:
+                        from langchain_core.messages import HumanMessage as HM, AIMessage
+                        AgentConfig.memory_provider.add_message(session_id, HM(content=user_query))
+                        AgentConfig.memory_provider.add_message(session_id, AIMessage(content=response))
+                    except Exception as e:
+                        logger.warning(f"Could not store interaction: {e}")
+                
+                return QueryResult(intent=intent, products=[], context_text=context_text, response=response, product_links=[])
             
             hydrated_products = self._category_browse_from_sqlite(cat_kws, intent_data.get("preferences", {}))
             
@@ -632,12 +756,12 @@ Always include product prices in ₹ and direct product URLs when recommending p
             # If no products matched the category, fall through to normal RAG pipeline
             logger.info("BROWSE_CATEGORY found 0 products, falling through to RAG pipeline")
 
-        # Step 2: Parallel retrieval (Vector + Graph)
-        vector_results, graph_results = await self.retrieve(user_query, intent_data)
-        logger.info(f"Retrieved: {len(vector_results)} vector items, {len(graph_results)} graph items")
+        # Step 2: Parallel retrieval (Vector/BM25 + Graph/Lucene + Text/SQL)
+        vector_results, graph_results, text_results = await self.retrieve(user_query, intent_data)
+        logger.info(f"Retrieved: {len(vector_results)} vector items, {len(graph_results)} graph items, {len(text_results)} text items")
 
-        # Step 3: Reciprocal Rank Fusion
-        fused_skus, non_prod_contexts = self._fuse_results(vector_results, graph_results)
+        # Step 3: Reciprocal Rank Fusion across all 3 channels
+        fused_skus, non_prod_contexts = self._fuse_results(vector_results, graph_results, text_results)
 
         # Step 4: SQL Hydration from SQLite
         hydrated_products = self._hydrate_from_sqlite(fused_skus, intent_data.get("preferences", {}), query=user_query, category_keywords=intent_data.get("category_keywords"))
