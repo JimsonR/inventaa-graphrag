@@ -13,3 +13,5 @@ supabase
 mem0ai
 pinecone
 azure-identity
+fastmcp>=3.0.0
+sse-starlette

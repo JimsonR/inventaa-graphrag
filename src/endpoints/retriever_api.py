@@ -1,68 +1,87 @@
-# from fastapi import APIRouter, Query, HTTPException, status
-# from pydantic import BaseModel, Field
-# from typing import List, Dict, Any
-# import os
-# import chromadb
+"""
+/search routes — Linear GraphRAG semantic + graph search for Inventaa outdoor lighting products.
+"""
 
-# from src.services.retrieve import ask_agent
+from __future__ import annotations
 
-# router = APIRouter()
+from typing import Optional, List, Any
+from fastapi import APIRouter, Query, HTTPException, status
+from pydantic import BaseModel, Field
 
-# CHROMA_HOST = os.getenv("CHROMA_HOST", "localhost")
-# CHROMA_PORT = int(os.getenv("CHROMA_PORT", "8000"))
+from src.query.graphrag_engine import GraphRAGEngine
+from src.db.database import get_session
+from src.db.models import Product
 
-# # --- Pydantic Data Models ---
-# class SearchResponse(BaseModel):
-#     query: str = Field(..., description="The query string submitted for search")
-#     response_text: Any = Field(..., description="Graph product list (JSON array) or conversational answer string")
+router = APIRouter(tags=["Retrieval & Search"])
 
-# class HealthStatus(BaseModel):
-#     status: str = Field(..., description="General API operational status")
-#     chromadb_connected: bool = Field(..., description="Database container connection status")
-#     indexed_chunks: int = Field(..., description="Total number of active vector documents across collections")
+# Singleton engine instance
+_engine: Optional[GraphRAGEngine] = None
 
-# # --- API Routes ---
+def get_engine() -> GraphRAGEngine:
+    global _engine
+    if _engine is None:
+        _engine = GraphRAGEngine()
+    return _engine
 
-# @router.get("/health", response_model=HealthStatus, tags=["System Health"])
-# def health_check():
-#     """
-#     Performs diagnosis checks on connectivity to the local ChromaDB database and sums all indexed chunks.
-#     """
-#     try:
-#         client = chromadb.HttpClient(host=CHROMA_HOST, port=CHROMA_PORT)
-#         client.heartbeat()
-        
-#         # Get all collections and sum their counts
-#         collections = client.list_collections()
-#         total_items = sum([client.get_collection(c.name).count() for c in collections])
-        
-#         return {
-#             "status": "healthy",
-#             "chromadb_connected": True,
-#             "indexed_chunks": total_items
-#         }
-#     except Exception as e:
-#         return {
-#             "status": "degraded",
-#             "chromadb_connected": False,
-#             "indexed_chunks": 0
-#         }
 
-# @router.get("/search", response_model=SearchResponse, tags=["Retrieval"])
-# def search_knowledge_base(
-#     q: str = Query(..., min_length=1, description="Semantic text query to search for")
-# ):
-#     """
-#     Submits a natural language query to the Hybrid RAG LangChain agent and returns the conversational response.
-#     """
-#     try:
-#         answer = ask_agent(q)
-#         return {
-#             "query": q,
-#             "response_text": answer
-#         }
-#     except Exception as e:
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail=f"Semantic retrieval search failed: {str(e)}"
-#         )
+class HealthStatus(BaseModel):
+    status: str = Field(..., description="General API operational status")
+    sqlite_connected: bool = Field(..., description="SQLite database connection status")
+    total_products_in_catalog: int = Field(..., description="Total products indexed in SQLite")
+
+
+class LinearSearchResponse(BaseModel):
+    query: str
+    intent: str
+    products: List[dict]
+    product_links: List[dict]
+    ai_response: str
+
+
+@router.get("/health", response_model=HealthStatus, tags=["System Health"])
+def health_check():
+    """
+    Performs health checks on the SQLite catalog database and counts indexed products.
+    """
+    try:
+        with get_session() as session:
+            count = session.query(Product).count()
+        return {
+            "status": "healthy",
+            "sqlite_connected": True,
+            "total_products_in_catalog": count
+        }
+    except Exception as e:
+        return {
+            "status": "degraded",
+            "sqlite_connected": False,
+            "total_products_in_catalog": 0
+        }
+
+
+@router.get("/search/products", response_model=LinearSearchResponse, tags=["Retrieval & Search"])
+async def search_products_linear(
+    q: str = Query(..., min_length=1, description="Natural language query, e.g. 'waterproof solar gate light'"),
+    n: int = Query(6, ge=1, le=20, description="Number of products to return"),
+    session_id: Optional[str] = Query(None, description="Session ID to fetch previous messages from DB for conversational continuity")
+):
+    """
+    Linear GraphRAG search: combines semantic Vector search with Neo4j Graph traversal,
+    ranks via Reciprocal Rank Fusion (RRF), hydrates authoritative details from SQLite,
+    and generates an AI sales response.
+    """
+    try:
+        engine = get_engine()
+        result = await engine.query(q, session_id=session_id)
+        return {
+            "query": q,
+            "intent": result.intent,
+            "products": result.products[:n],
+            "product_links": result.product_links[:n],
+            "ai_response": result.response
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Linear GraphRAG retrieval failed: {str(e)}"
+        )
