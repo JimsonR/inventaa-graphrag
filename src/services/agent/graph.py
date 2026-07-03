@@ -1,7 +1,11 @@
+import concurrent.futures
+import contextvars
 import json
 import logging
 import operator
+import os
 import sys
+import threading
 from typing import Annotated, Sequence, TypedDict, Optional
 
 from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, ToolMessage, AIMessage
@@ -9,8 +13,14 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
 
 from src.services.agent.config import AgentConfig
-from src.services.agent.tools import get_tools
+from src.services.agent.context import tenant_context
+from src.services.agent.memory import get_recent_messages
+from src.services.agent.mem0_client import fetch_long_term_context, store_long_term_context
+from src.services.agent.response_cache import cache_lookup, cache_store
 from src.services.agent.routing import get_intent_config
+from src.services.agent.taxonomy import fetch_taxonomy_candidates, extract_taxonomy_parameters
+from src.services.agent.tools import get_tools
+from src.services.agent.utils import track_time
 
 # Configure basic logging to ensure INFO statements show up in uvicorn
 logging.basicConfig(level=logging.INFO, stream=sys.stdout, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -32,7 +42,6 @@ def build_graph(system_prompt: str, tools: list):
     agent_logger = logging.getLogger("Node.Agent")
     
     def agent_node(state: AgentState):
-        from src.services.agent.utils import track_time
         with track_time("Node: Agent", custom_logger=agent_logger):
             agent_logger.info(f"Invoking LLM with {len(state['messages'])} messages. Iteration: {state.get('iterations', 0)}")
             response = llm_with_tools.invoke(state["messages"])
@@ -40,9 +49,10 @@ def build_graph(system_prompt: str, tools: list):
         # Guard: LangGraph crashes if the LLM returns neither text nor tool calls
         if not response.tool_calls and not response.content:
             agent_logger.warning("LLM returned empty response — injecting fallback message.")
+            brand_name = AgentConfig.get_brand_name()
             fallback = AgentConfig.brain.get("prompts", {}).get(
                 "fallback_error_message",
-                "I'm sorry, I'm only able to assist with LED lighting products and related queries from Inventaa."
+                f"I'm sorry, I am only able to assist with queries related to {brand_name}."
             )
             response.content = fallback
 
@@ -81,7 +91,6 @@ def build_graph(system_prompt: str, tools: list):
     judge_logger = logging.getLogger("Node.Judge")
 
     def judge_node(state: AgentState):
-        from src.services.agent.utils import track_time
         with track_time("Node: Judge", custom_logger=judge_logger):
             """
             LLM Judge: evaluates the raw TOOL OUTPUT directly against user query.
@@ -116,19 +125,23 @@ def build_graph(system_prompt: str, tools: list):
                 if isinstance(parsed_res, list):
                     minified_res = []
                     for item in parsed_res:
-                        minified_res.append({
+                        minified_item = {
                             "name": item.get("name"),
                             "collections": item.get("collections"),
-                            "wattages": item.get("wattages")
-                        })
+                        }
+                        for opt in AgentConfig.product_options:
+                            alias = opt["alias"]
+                            if alias in item:
+                                minified_item[alias] = item.get(alias)
+                        minified_res.append(minified_item)
                     judging_context = json.dumps(minified_res, ensure_ascii=False)
                 else:
                     judging_context = product_search_result
             except Exception:
                 judging_context = product_search_result
                 
-            brand_name = AgentConfig.brain.get("tenant", {}).get("name", "Inventaa")
-            brand_desc = AgentConfig.brain.get("tenant", {}).get("description", "an Indian LED lighting brand")
+            brand_name = AgentConfig.get_brand_name()
+            brand_desc = AgentConfig.get_brand_description()
             prompt_template = AgentConfig.brain.get("prompts", {}).get(
                 "judge_system_product",
                 f"You are a strict product relevance judge for {brand_name}.\n"
@@ -145,7 +158,7 @@ def build_graph(system_prompt: str, tools: list):
         else:
             last_ai_msg = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
             last_ai_content = last_ai_msg.content if last_ai_msg else ""
-            brand_name = AgentConfig.brain.get("tenant", {}).get("name", "Inventaa")
+            brand_name = AgentConfig.get_brand_name()
             
             prompt_template = AgentConfig.brain.get("prompts", {}).get(
                 "judge_system_qa",
@@ -239,11 +252,9 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
         _initialized = True
         logger.info("Hybrid RAG Agent Initialized!")
 
-    from src.services.agent.utils import track_time
     request_logger = logging.getLogger("Task.Request")
     with track_time("Total Request Execution", custom_logger=request_logger):
         try:
-            from src.services.agent.context import tenant_context
             tenant_context.set(tenant_id)
             
             logger.info(f"--- STARTING GRAPH EXECUTION FOR QUERY: '{query_text}' ---")
@@ -251,18 +262,10 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
             # ─── Parallel Pre-computation ──────────────────────────────────────────
             # We run History+Routing, Embeddings, and Mem0 fetch simultaneously
             # to crush the pre-computation latency.
-            from src.services.agent.memory import get_recent_messages
-            from src.services.agent.mem0_client import fetch_long_term_context, store_long_term_context
-            from src.services.agent.response_cache import cache_lookup, cache_store
-            import concurrent.futures
-            import os
-            import threading
-
             all_tools = get_tools()
             task_logger = logging.getLogger("Task.Parallel")
 
             def task_history_and_intent():
-                from src.services.agent.utils import track_time
                 with track_time("Task: History & Intent", custom_logger=task_logger):
                     history = get_recent_messages(session_id=session_id, exclude_message_id=message_id, limit=5)
                     history_text = "\n".join([f"{'User' if isinstance(m, HumanMessage) else 'Agent'}: {m.content}" for m in history[-2:]])
@@ -270,21 +273,19 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                     return history, sys_prompt, active_tools, router_result
 
             def task_embedding():
-                from src.services.agent.utils import track_time
                 with track_time("Task: Embedding Generation", custom_logger=task_logger):
                     return AgentConfig.embeddings.embed_query(query_text)
 
             def task_mem0():
-                from src.services.agent.utils import track_time
                 with track_time("Task: Mem0 Retrieval", custom_logger=task_logger):
                     return fetch_long_term_context(query_text, user_id)
 
-            from src.services.agent.utils import track_time
             with track_time("Total Pre-computation Phase 1", custom_logger=task_logger):
+                ctx = contextvars.copy_context()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-                    future_intent = executor.submit(task_history_and_intent)
-                    future_embedding = executor.submit(task_embedding)
-                    future_mem0 = executor.submit(task_mem0)
+                    future_intent = executor.submit(ctx.run, task_history_and_intent)
+                    future_embedding = executor.submit(ctx.run, task_embedding)
+                    future_mem0 = executor.submit(ctx.run, task_mem0)
 
                     history, system_prompt, active_tools, router_result = future_intent.result()
                     intent = router_result.intent
@@ -322,7 +323,7 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                     else:
                         reply += AgentConfig.brain.get("prompts", {}).get(
                             "broad_query_fallback",
-                            "For example, are you looking for Indoor, Outdoor, or Solar lights?"
+                            "Could you please specify which category you are interested in?"
                         )
                     return reply
 
@@ -339,7 +340,6 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                     else:
                         translation_embedding = query_embedding
                     # Fetch raw candidates via vector similarity
-                    from src.services.agent.taxonomy import fetch_taxonomy_candidates, extract_taxonomy_parameters
                     raw_candidates = fetch_taxonomy_candidates(translation_embedding)
                     
                     if raw_candidates and "SearchProductsDatabase" in [t.name for t in active_tools]:
@@ -358,7 +358,10 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                     if candidate_cols:
                         reply += "\n".join(f"• {c}" for c in candidate_cols[:5]) # limit to top 5
                     else:
-                        reply += "For example, are you looking for Indoor, Outdoor, or Solar lights?"
+                        reply += AgentConfig.brain.get("prompts", {}).get(
+                            "broad_query_fallback",
+                            "Could you please specify which category you are interested in?"
+                        )
                     return reply
                 
                 # Build clean parameter list for Main Agent
@@ -376,7 +379,7 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
             # ─── Semantic Cache: Lookup ──────────────────────────────────────────
             cache_threshold = float(os.getenv("CACHE_SIMILARITY_THRESHOLD", "0.99"))
             cache_ttl = int(os.getenv("CACHE_TTL_SECONDS", "86400"))  # 24 hours
-            cache_skip = ["detail", "search", "policy"]  # product, detail, and policy lookups should always be fresh
+            cache_skip = AgentConfig.get_cache_skip_intents()
             
             cached = cache_lookup(
                 embedding=query_embedding,
@@ -419,7 +422,6 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
                 logger.info(f"[{idx}] {role}:\n{m.content}\n")
             logger.info("------------------------------------")
 
-            from src.services.agent.utils import track_time
             with track_time("Total Graph Execution"):
                 final_state = executor_graph.invoke({
                     "messages": messages,
@@ -454,7 +456,6 @@ def ask_agent(query_text: str, tenant_id: str = None, session_id: str = None, me
 
             # Helper to trigger async memory ingestion without blocking the response
             def run_background_storage(response_text):
-                import threading
                 threading.Thread(target=store_long_term_context, args=(query_text, response_text, user_id), daemon=True).start()
 
             try:

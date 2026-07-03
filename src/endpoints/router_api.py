@@ -1,7 +1,7 @@
+import asyncio
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from typing import Optional, List, Any, Union
-from datetime import datetime
 
 from src.services.retrieve import ask_agent
 
@@ -39,7 +39,7 @@ class IncomingMessage(BaseModel):
     quantity_unit: Optional[str] = None
 
 @router.post("/route", tags=["Routing"])
-def route_message(message: IncomingMessage):
+async def route_message(message: IncomingMessage):
     """
     Routes an incoming message based on its intent.
     If the intent is 'FAQ_KNOWLEDGE', the message text is routed directly to the
@@ -64,7 +64,8 @@ def route_message(message: IncomingMessage):
                 query_text = f"{query_text}\n(Selected option: {message.reply_text})" if query_text else f"(Selected option: {message.reply_text})"
 
             # Route to the LangChain Hybrid Agent, scoped to the tenant
-            answer = ask_agent(query_text, tenant_id=tenant, session_id=message.session_id, message_id=message.message_id, user_id=message.session_id)
+            user_id = message.sender_phone_number or message.session_id
+            answer = await asyncio.to_thread(ask_agent, query_text, tenant_id=tenant, session_id=message.session_id, message_id=message.message_id, user_id=user_id)
 
             return {
                 "status": "routed_to_knowledge_base",

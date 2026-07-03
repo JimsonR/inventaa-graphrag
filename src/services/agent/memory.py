@@ -1,22 +1,14 @@
-import os
 import logging
+from abc import ABC, abstractmethod
 from typing import List, Optional
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 from supabase import create_client, Client
 
 logger = logging.getLogger(__name__)
 
-import os
-import logging
-from abc import ABC, abstractmethod
-from typing import List, Optional
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
-
-logger = logging.getLogger(__name__)
-
 class BaseMemoryProvider(ABC):
     @abstractmethod
-    def get_recent_messages(self, session_id: str, exclude_message_id: Optional[str] = None, limit: int = 5) -> List[BaseMessage]:
+    def get_recent_messages(self, session_id: str, exclude_message_id: Optional[str] = None, limit: int = 5, tenant_id: Optional[str] = None) -> List[BaseMessage]:
         pass
 
 class SupabaseMemoryProvider(BaseMemoryProvider):
@@ -24,13 +16,18 @@ class SupabaseMemoryProvider(BaseMemoryProvider):
         from supabase import create_client, Client
         self._supabase: Client = create_client(url, key)
 
-    def get_recent_messages(self, session_id: str, exclude_message_id: Optional[str] = None, limit: int = 5) -> List[BaseMessage]:
+    def get_recent_messages(self, session_id: str, exclude_message_id: Optional[str] = None, limit: int = 5, tenant_id: Optional[str] = None) -> List[BaseMessage]:
         if not session_id:
             return []
 
         try:
-            # Only fetch inbound messages to avoid distracting the LLM with its own massive product dumps
+            from src.services.agent.context import tenant_context
+            active_tenant = tenant_id or tenant_context.get()
+
+            # Only fetch inbound messages to avoid distracting the LLM with its own massive structured data dumps
             query = self._supabase.table("messages").select("message_id,text,direction,created_at,reply_text").eq("session_id", session_id).eq("direction", "inbound")
+            if active_tenant:
+                query = query.eq("tenant_id", active_tenant)
             
             # Order by created_at descending to get the most recent
             query = query.order("created_at", desc=True).limit(limit)
@@ -68,7 +65,7 @@ class InMemoryProvider(BaseMemoryProvider):
     def __init__(self):
         self._store = {}
 
-    def get_recent_messages(self, session_id: str, exclude_message_id: Optional[str] = None, limit: int = 5) -> List[BaseMessage]:
+    def get_recent_messages(self, session_id: str, exclude_message_id: Optional[str] = None, limit: int = 5, tenant_id: Optional[str] = None) -> List[BaseMessage]:
         if not session_id or session_id not in self._store:
             return []
             
@@ -91,7 +88,7 @@ class InMemoryProvider(BaseMemoryProvider):
         self._store[session_id].append(message)
 
 
-def get_recent_messages(session_id: str, exclude_message_id: Optional[str] = None, limit: int = 5) -> List[BaseMessage]:
+def get_recent_messages(session_id: str, exclude_message_id: Optional[str] = None, limit: int = 5, tenant_id: Optional[str] = None) -> List[BaseMessage]:
     """
     Fetches the most recent inbound (user) messages for a given session from the active memory provider,
     and converts them to Langchain messages (chronological order).
@@ -101,4 +98,4 @@ def get_recent_messages(session_id: str, exclude_message_id: Optional[str] = Non
     if AgentConfig.memory_provider is None:
         logger.warning("AgentConfig.memory_provider is not initialized, returning empty history.")
         return []
-    return AgentConfig.memory_provider.get_recent_messages(session_id, exclude_message_id, limit)
+    return AgentConfig.memory_provider.get_recent_messages(session_id, exclude_message_id, limit, tenant_id=tenant_id)

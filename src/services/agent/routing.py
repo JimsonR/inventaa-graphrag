@@ -9,9 +9,9 @@ Design principles:
 
 Intent hierarchy (checked in order to avoid ambiguity):
   SEARCH    → Show / find / list / filter products
-  DETAIL    → One named product's specs, wattage, warranty, material
+  DETAIL    → One named item's specs, dimensions, warranty, material
   POLICY    → Shipping, returns, warranty claims, bulk pricing
-  ADVICE    → Installation, suitability, lifespan FAQs
+  ADVICE    → Setup, suitability, usage FAQs
   KNOWLEDGE → Educational / comparison / concept articles
 """
 
@@ -35,61 +35,57 @@ EXTERNAL_INTENT_MAP = {}
 # ─── Per-intent compact system prompts ────────────────────────────────────────
 def get_intent_prompts():
     from src.services.agent.config import AgentConfig
-    brand_name = AgentConfig.brain.get("tenant", {}).get("name", "Inventaa")
-    collections_str = " | ".join(AgentConfig.collections) if AgentConfig.collections else "3 in 1 gate light | Divine Light For Home Entrance | Indoor Commercial Lights | Indoor Domestic Lights | LED Outdoor Wall Light | Outdoor Commercial Lights | Outdoor Garden Bollard Light | Outdoor LED Gate Lamp Lights | Solar Lights"
+    brand_name = AgentConfig.get_brand_name()
+    collections_str = " | ".join(AgentConfig.collections) if AgentConfig.collections else "Available collections in catalog"
     
     _BASE_RULE = (
-        f"You are an AI sales assistant for {brand_name}.\n"
+        f"You are an AI sales and support assistant for {brand_name}.\n"
         "RULES:\n"
         "1. ALWAYS use tools to query the database before answering. \n"
-        "   - Always use `SearchProductsDatabase` to search for products. If the tool returns `needs_clarification` with a list of `available_collections`, you MUST present those collections to the user and ask them to narrow down their choice.\n"
+        "   - Always use `SearchProductsDatabase` (or equivalent catalog search tool) to search for items. If the tool returns `needs_clarification` with a list of `available_collections`, present those categories to the user and ask them to narrow down their choice.\n"
         "2. If the tool returns no data, say: \"I'm sorry, I don't have that information in our database.\"\n"
-        "3. NEVER hallucinate product names, prices, specs, or policies.\n"
-        "4. CRITICAL: NEVER manually list or type out product options as text. If you need to recommend or show products, you MUST call the `SearchProductsDatabase` tool so the UI can render them with images. Do not summarize products from conversation history into text.\n"
-        "5. When answering questions about policies, offers, or discounts, you MUST explicitly list out the exact percentages, tiers, and details provided by the tool. Do not just summarize that they exist.\n"
-        "6. If the tool returns store-wide or generic discounts (e.g. 'Extra 5% OFF on Rs 7500'), state those exact tiers. NEVER invent a specific percentage discount (like '50% off') for a product category if the tool does not explicitly state it.\n"
+        "3. NEVER hallucinate item names, prices, specifications, or company policies.\n"
+        "4. CRITICAL: NEVER manually list or type out item options as text. If you need to recommend or show catalog items, call the search tool so the UI can render them cleanly. Do not summarize items from conversation history into text.\n"
+        "5. When answering questions about policies, offers, or discounts, explicitly list out the exact details provided by the tool.\n"
+        "6. If the tool returns store-wide or generic discounts, state those exact terms. NEVER invent specific discounts or terms if the tool does not explicitly state them.\n"
         "7. ALWAYS respond in the exact same language that the user used in their original query. Do NOT reply in English if the user asked in another language.\n\n"
     )
 
+    configured_prompts = AgentConfig.brain.get("prompts", {}).get("intents", {})
+
     return {
-        INTENT_SEARCH: (
+        INTENT_SEARCH: configured_prompts.get("search", (
             _BASE_RULE +
-            "Use SearchProductsDatabase to find products.\\n"
+            "Use SearchProductsDatabase to find items in the catalog.\\n"
             "Pass the user's natural language as the 'query' param. "
-            "If the user asks for a broad term (like 'indoor' or 'outdoor') that conceptually matches multiple different collections, DO NOT guess and DO NOT call the tool. Instead, reply directly asking them to clarify which specific collection they want.\\n"
+            "If the user asks for a broad term that conceptually matches multiple different collections without specifics, reply directly asking them to clarify which specific collection they want.\\n"
             "CRITICAL EXCEPTIONS to the broad term rule:\\n"
-            "1. If the user's query exactly or nearly exactly matches ONE collection name (e.g., 'solar lights' matches 'Solar Lights'), IMMEDIATELY call the tool and pass that collection name to the `category` param.\\n"
-            "2. If the user specifies a distinct FEATURE (like 'waterproof', 'dimmable'), SPECIFICATION (like '12W', 'IP65'), or PRICE limit, DO NOT ask for clarification. Immediately call the tool using `category=None` and pass the feature/spec/max_price.\\n"
-            "If you do call the tool, you could incorporate long-term preferences.\\n"
+            "1. If the user's query exactly or nearly exactly matches ONE collection name, IMMEDIATELY call the tool and pass that collection name to the `category` param.\\n"
+            "2. If the user specifies a distinct feature, specification, or price limit, DO NOT ask for clarification. Immediately call the tool using `category=None` and pass the filter parameters.\\n"
             f"Available categories (collections): {collections_str}"
-        ),
-        INTENT_DETAIL: (
+        )),
+        INTENT_DETAIL: configured_prompts.get("detail", (
             _BASE_RULE +
-            "CRITICAL: ALWAYS use the ProductDetailsDatabase tool to look up the specific named product before answering. "
-            "Do NOT rely on conversational memory for specs or warranty. "
-            "Pass the product name as 'product_name'. "
-            "The tool returns wattage options, colour options, specs, and warranty directly from the Neo4j database."
-        ),
-        INTENT_POLICY: (
+            "CRITICAL: ALWAYS use the ProductDetailsDatabase tool to look up the specific named item before answering. "
+            "Do NOT rely on conversational memory for specifications or warranty. "
+            "Pass the item name as 'product_name'. "
+            "The tool returns available options, specifications, and warranty directly from the database."
+        )),
+        INTENT_POLICY: configured_prompts.get("policy", (
             _BASE_RULE +
-            "If the user is asking about the warranty for a specific product from the conversation, use ProductDetailsDatabase.\\n"
-            "Use GeneralKnowledgeDatabase to search for general coupon codes, active offers, discounts, and shipping/replacement policies. IMPORTANT: Provide ONLY the core policy keywords as the query (e.g., 'offers', 'discount', 'shipping'), not the product names.\\n"
-            "Otherwise, use PolicyVectorDatabase to answer questions about general company policies.\\n"
-            "Topics for PolicyVectorDatabase: shipping, delivery time, return/replacement, warranty claims, "
-            "bulk pricing, dealer rates, damaged/wrong items."
-        ),
-        INTENT_ADVICE: (
+            "If the user is asking about the warranty for a specific item from the conversation, use ProductDetailsDatabase.\\n"
+            "Use GeneralKnowledgeDatabase to search for active offers, promotions, and shipping/replacement policies. Provide ONLY the core policy keywords as the query (e.g., 'offers', 'discount', 'shipping'), not item names.\\n"
+            "Otherwise, use PolicyVectorDatabase to answer questions about general company policies (shipping, returns, warranty claims, pricing)."
+        )),
+        INTENT_ADVICE: configured_prompts.get("advice", (
             _BASE_RULE +
-            "Use ProductAdviceDatabase to answer general product FAQs NOT tied to a specific product.\\n"
-            "Topics: installation, mounting, smart switch/timer compatibility, "
-            "coastal suitability, LED lifespan, electricity savings, maintenance."
-        ),
-        INTENT_KNOWLEDGE: (
+            "Use ProductAdviceDatabase to answer general item FAQs and suitability advice NOT tied to a specific named item.\\n"
+            "Topics: usage instructions, compatibility, lifespan, maintenance."
+        )),
+        INTENT_KNOWLEDGE: configured_prompts.get("knowledge", (
             _BASE_RULE +
-            "Use GeneralKnowledgeDatabase to answer educational or comparison questions about lighting.\\n"
-            "Topics: LED vs fluorescent, wave-free vs traditional, what is IP rating, "
-            "how to choose outdoor lighting, benefits of solar, CRI, lumens guide."
-        ),
+            "Use GeneralKnowledgeDatabase to answer educational or comparison questions about domain concepts and buying guides."
+        )),
     }
 
 def get_intent_tools():
@@ -117,17 +113,17 @@ class IntentClassification(BaseModel):
     )
     is_broad_navigation: bool = Field(
         False, 
-        description="True ONLY if the user is asking to browse a generic TOP-LEVEL category with NO OTHER SPECIFICS (e.g. 'I want to buy outdoor lights', 'show me indoor lights', 'show me everything'). FALSE if the query contains ANY specific product types, sub-categories, or features (e.g. 'outdoor gate lights', 'indoor ceiling lights', 'solar bollards'). If they mention a specific type like 'gate', 'wall', 'commercial', or 'garden', this MUST BE FALSE."
+        description="True ONLY if the user is asking to browse a generic TOP-LEVEL category with NO OTHER SPECIFICS (e.g. 'show me everything', 'show me category X'). FALSE if the query contains ANY specific item types, sub-categories, or features. If they mention a specific sub-type or application, this MUST BE FALSE."
     )
     broad_category_group: Optional[str] = Field(
         None, 
-        description="If is_broad_navigation is True, map it to one of: 'Outdoor', 'Indoor', 'Solar', or 'All'."
+        description="If is_broad_navigation is True, map it to one of the top-level category groups available in the schema."
     )
 
 def get_router_system_prompt():
     from src.services.agent.config import AgentConfig
-    brand_name = AgentConfig.brain.get("tenant", {}).get("name", "Inventaa")
-    brand_description = AgentConfig.brain.get("tenant", {}).get("description", "an Indian LED lighting brand")
+    brand_name = AgentConfig.get_brand_name()
+    brand_description = AgentConfig.get_brand_description()
     intents = AgentConfig.brain.get("intents", {})
     
     intent_desc = "\n".join(intents.get(i, {}).get("description", f"- '{i}'") for i in [INTENT_SEARCH, INTENT_DETAIL, INTENT_POLICY, INTENT_ADVICE, INTENT_KNOWLEDGE])

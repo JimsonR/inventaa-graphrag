@@ -1,3 +1,4 @@
+import contextvars
 import json
 import logging
 import re
@@ -12,26 +13,24 @@ logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # GRAPH SCHEMA (for reference / prompt engineering)
-# Categories: Gate & Pillar Lights | Solar Lights | Outdoor Wall Lights |
-#             Bollard & Garden Lights | Street Lights | Flood Lights |
-#             Indoor & Ceiling Lights | Panel Lights | Pathway & Step Lights |
-#             Bulkhead Lights | Divine & Temple Lights | General Purpose Lights
-#
-# UseCases: gate-pillar | indoor-ceiling | outdoor-wall | garden-pathway |
-#           pathway-step | street-road | flood-area | solar-outdoor |
-#           religious-decorative
-#
-# Features: outdoor | indoor | solar-powered | waterproof | IP65-rated |
-#           IP66-rated | motion-sensor | dimmable | energy-efficient |
-#           warm-white | cool-white | neutral-white | 3-in-1-colour |
-#           aluminium-body | polycarbonate-body | surface-mount | wall-mount |
-#           post-top-mount | UV-protected | rustproof
+# Dynamically loaded categories, collections, use cases, and features.
+# Specific values are discovered at startup via AgentConfig.initialize().
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 
 
 
+
+
+def _extract_numerical_sort_val(row, field, sort_dir):
+    vals = row.get(field) or []
+    if not vals:
+        return float('inf') if "asc" in sort_dir else float('-inf')
+    match = re.search(r'(\d+(?:\.\d+)?)', str(vals[0]))
+    if match:
+        return float(match.group(1))
+    return float('inf') if "asc" in sort_dir else float('-inf')
 
 
 def search_products_db(
@@ -68,7 +67,7 @@ def search_products_db(
         from src.services.agent.context import tenant_context
         tenant_id = tenant_context.get()
         if tenant_id:
-            where_clauses.append("(p.tenant = $tenant_id OR p.tenant IS NULL)")
+            where_clauses.append("p.tenant = $tenant_id")
             params["tenant_id"] = tenant_id
 
         # 1. Full-Text Search
@@ -92,12 +91,7 @@ def search_products_db(
                         query = None
 
         if query:
-            _STOP = set(AgentConfig.brain.get("search_heuristics", {}).get("stop_words", [
-                "led", "light", "lights", "lamp", "lamps", "the", "a", "an", "and", "or", "for", "of", "in", "with", 
-                "by", "from", "lighting", "offers", "offer", "discount", "discounts", "sale", "deal", "deals", 
-                "best", "top", "cheap", "cheapest", "buy", "show", "me", "any", "on", "indoor", "outdoor",
-                "product", "products"
-            ]))
+            _STOP = AgentConfig.get_stop_words()
             raw = [t.strip(".,?!-–—/|") for t in query.split()]
             good_tokens = [t.lower() for t in raw if t and len(t) > 2 and t.lower() not in _STOP]
             
@@ -116,9 +110,9 @@ def search_products_db(
                 })
 
             if good_tokens:
-                # Use prefix matching instead of fuzzy to prevent 'indoor' from matching 'door' or 'outdoor'
+                ft_idx = AgentConfig.get_fulltext_index()
                 lucene_query = " AND ".join([t + "*" for t in good_tokens])
-                cypher_query += 'CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score\n'
+                cypher_query += f'CALL db.index.fulltext.queryNodes("{ft_idx}", $lucene_query) YIELD node AS p, score\n'
                 params["lucene_query"] = lucene_query
             else:
                 cypher_query += "MATCH (p:Product)\n"
@@ -223,11 +217,11 @@ RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
             params["lucene_query"] = relaxed_lucene
             res = AgentConfig.graph.query(cypher_query, params=params)
             
-        # ── Query Relaxation 2: Drop Lucene entirely if structural filters exist ──
         if not res and "lucene_query" in params and (category or collection or feature or use_case or spec):
             logger.info(f"[QueryRelaxation] 0 results for OR. Dropping full-text query entirely since structural filters exist.")
             # Remove the lucene query from the cypher string
-            relaxed_cypher = cypher_query.replace('CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score\n', 'MATCH (p:Product)\n')
+            ft_idx = AgentConfig.get_fulltext_index()
+            relaxed_cypher = cypher_query.replace(f'CALL db.index.fulltext.queryNodes("{ft_idx}", $lucene_query) YIELD node AS p, score\n', 'MATCH (p:Product)\n')
             # Remove score from the WITH clause
             relaxed_cypher = relaxed_cypher.replace('WITH p, score', 'WITH p')
             # Remove score from the ORDER BY clause if present
@@ -236,17 +230,9 @@ RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
             
             res = AgentConfig.graph.query(relaxed_cypher, params=params)
             
-        import re
         if res and dynamic_sort_field:
-            def extract_numerical(row):
-                vals = row.get(dynamic_sort_field) or []
-                if not vals:
-                    return float('inf') if "asc" in (sort_by or "").lower() else float('-inf')
-                match = re.search(r'(\d+(?:\.\d+)?)', vals[0])
-                if match:
-                    return float(match.group(1))
-                return float('inf') if "asc" in (sort_by or "").lower() else float('-inf')
-            res.sort(key=extract_numerical, reverse="desc" in (sort_by or "").lower())
+            sort_dir = (sort_by or "").lower()
+            res.sort(key=lambda r: _extract_numerical_sort_val(r, dynamic_sort_field, sort_dir), reverse="desc" in sort_dir)
 
         if not res:
             # ── Fulltext Fallback ─────────────────────────────────────────
@@ -274,7 +260,7 @@ RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
             logger.info(f"[MultiCollectionFallback] Query matched {len(res)} products across {len(all_collections)} collections. Returning needs_clarification.")
             return json.dumps({
                 "needs_clarification": True,
-                "message": "I found many products matching your request across several different collections. Could you please specify which type of light you're looking for?",
+                "message": AgentConfig.brain.get("prompts", {}).get("multi_collection_clarification", "I found many items matching your request across several categories. Could you please specify which category you are looking for?"),
                 "available_collections": sorted(list(all_collections))
             })
 
@@ -289,11 +275,7 @@ def get_product_details_db(product_name: str):
     try:
         # --- Smarter tokenization ---
         # Strip noise tokens (stop words, single chars, numbers-only, punctuation like "-")
-        _DETAIL_STOP = set(AgentConfig.brain.get("search_heuristics", {}).get("detail_stop_words", [
-            "led", "light", "lights", "lamp", "lamps", "the", "a", "an",
-            "and", "or", "for", "of", "in", "with", "by", "from",
-            "frontgate", "lighting", "design", "outdoor", "indoor",
-        ]))
+        _DETAIL_STOP = AgentConfig.get_detail_stop_words()
         raw_tokens = [t.strip(".,?!-–—/|") for t in product_name.split()]
         # Keep tokens that are meaningful: length > 1, not stop, not pure numbers
         good_tokens = [
@@ -318,9 +300,10 @@ def get_product_details_db(product_name: str):
         
         dynamic_return_clause = (",\n               ".join(dynamic_returns) + ",") if dynamic_returns else ""
 
+        ft_idx = AgentConfig.get_fulltext_index()
         cypher_query = f"""
-        CALL db.index.fulltext.queryNodes("product_name_ft", $lucene_query) YIELD node AS p, score
-        WHERE p.tenant = $tenant_id OR p.tenant IS NULL
+        CALL db.index.fulltext.queryNodes("{ft_idx}", $lucene_query) YIELD node AS p, score
+        WHERE p.tenant = $tenant_id
         WITH p, score
         ORDER BY score DESC LIMIT 1
         RETURN p.name AS name, p.price_num AS price,
@@ -343,8 +326,9 @@ def get_product_details_db(product_name: str):
             return "Product not found."
 
         product = res[0]
+        curr = AgentConfig.get_currency_symbol()
         output = f"Product Name: {product.get('name')}\n"
-        output += f"Price: Rs. {product.get('price')}\n"
+        output += f"Price: {curr} {product.get('price')}\n"
 
         # Dynamic Options
         for opt in AgentConfig.product_options:
@@ -363,7 +347,7 @@ def get_product_details_db(product_name: str):
         if product.get('warranty_info'):
             output += f"Warranty: {product.get('warranty_info')}\n"
         else:
-            brand_name = AgentConfig.brain.get('tenant', {}).get('name', 'Inventaa')
+            brand_name = AgentConfig.get_brand_name()
             default_warranty = AgentConfig.brain.get('tenant', {}).get('default_warranty')
             if default_warranty:
                 formatted_warranty = default_warranty.format(brand_name=brand_name)
@@ -418,7 +402,7 @@ def query_policies(query: str):
             from src.services.agent.context import tenant_context
             tenant_id = tenant_context.get()
             offer_res = AgentConfig.graph.query(
-                "MATCH (t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) WHERE (t.id = $tenant_id OR $tenant_id IS NULL) RETURN o.text AS text LIMIT 1",
+                "MATCH (t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) WHERE t.id = $tenant_id RETURN o.text AS text LIMIT 1",
                 params={"tenant_id": tenant_id}
             )
             if offer_res and offer_res[0].get("text"):
@@ -435,14 +419,15 @@ def query_policies(query: str):
                 AgentConfig.general_vector_store = Neo4jVector.from_existing_index(
                     embedding=AgentConfig.embeddings, url=NEO4J_URI, 
                     username=os.getenv("NEO4J_USERNAME"), password=os.getenv("NEO4J_PASSWORD"),
-                    index_name=os.getenv("NEO4J_FAQ_INDEX", "inventaa_faq_vector"), text_node_property="text"
+                    index_name=AgentConfig.get_faq_index(), text_node_property="text"
                 )
             res = AgentConfig.general_vector_store.similarity_search_with_score(query, k=2, filter=filter_dict)
         return res
 
+    ctx = contextvars.copy_context()
     with ThreadPoolExecutor(max_workers=2) as executor:
-        future_offers = executor.submit(fetch_offers)
-        future_vectors = executor.submit(fetch_vectors)
+        future_offers = executor.submit(ctx.run, fetch_offers)
+        future_vectors = executor.submit(ctx.run, fetch_vectors)
         
         global_offers_text = future_offers.result()
         results = future_vectors.result()
@@ -461,16 +446,17 @@ def query_product_faqs(query: str):
     import os
     
     if AgentConfig.product_faq_vector_store is None:
+        curr = AgentConfig.get_currency_symbol()
         NEO4J_URI = os.getenv("NEO4J_URI", "").replace("neo4j+s://", "neo4j+ssc://")
         AgentConfig.product_faq_vector_store = Neo4jVector.from_existing_index(
             embedding=AgentConfig.embeddings, url=NEO4J_URI, 
             username=os.getenv("NEO4J_USERNAME"), password=os.getenv("NEO4J_PASSWORD"),
             index_name="product_faq_vector", text_node_property="question",
-            retrieval_query='''
+            retrieval_query=f'''
             MATCH (node)<-[:HAS_FAQ]-(p:Product)
             RETURN "FAQ Match: " + node.question + "\\nAnswer: " + node.answer + 
-                   "\\n--> This belongs to Product: " + p.name + " (Price: ₹" + toString(p.price_num) + ")" AS text,
-                   score, {product_url: p.url} AS metadata
+                   "\\n--> This belongs to Product: " + p.name + " (Price: {curr}" + toString(p.price_num) + ")" AS text,
+                   score, {{product_url: p.url}} AS metadata
             '''
         )
         
@@ -487,7 +473,7 @@ def query_product_faqs(query: str):
 
 def query_general_knowledge(query: str):
     """
-    Search blog articles, offers, and general lighting knowledge stored as Chunk nodes.
+    Search blog articles, offers, and general domain knowledge stored as Chunk nodes.
     Uses vector search on the general knowledge vector index.
     """
     try:
@@ -499,7 +485,7 @@ def query_general_knowledge(query: str):
             AgentConfig.general_vector_store = Neo4jVector.from_existing_index(
                 embedding=AgentConfig.embeddings, url=NEO4J_URI, 
                 username=os.getenv("NEO4J_USERNAME"), password=os.getenv("NEO4J_PASSWORD"),
-                index_name=os.getenv("NEO4J_FAQ_INDEX", "inventaa_faq_vector"), text_node_property="text"
+                index_name=AgentConfig.get_faq_index(), text_node_property="text"
             )
             
         from src.services.agent.context import tenant_context
@@ -512,7 +498,7 @@ def query_general_knowledge(query: str):
         def fetch_offers():
             try:
                 offer_res = AgentConfig.graph.query(
-                    "MATCH (t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) WHERE (t.id = $tenant_id OR $tenant_id IS NULL) RETURN o.text AS text LIMIT 1",
+                    "MATCH (t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) WHERE t.id = $tenant_id RETURN o.text AS text LIMIT 1",
                     params={"tenant_id": tenant_id}
                 )
                 if offer_res and offer_res[0].get("text"):
@@ -524,9 +510,10 @@ def query_general_knowledge(query: str):
         def fetch_vectors():
             return AgentConfig.general_vector_store.similarity_search_with_score(query, k=3, filter=filter_dict)
             
+        ctx = contextvars.copy_context()
         with ThreadPoolExecutor(max_workers=2) as executor:
-            future_offers = executor.submit(fetch_offers)
-            future_vectors = executor.submit(fetch_vectors)
+            future_offers = executor.submit(ctx.run, fetch_offers)
+            future_vectors = executor.submit(ctx.run, fetch_vectors)
             
             global_offers_text = future_offers.result()
             results = future_vectors.result()
@@ -554,26 +541,27 @@ def query_general_knowledge(query: str):
 
 
 def get_tools():
+    brand_name = AgentConfig.get_brand_name()
     return [
         StructuredTool.from_function(
             name="SearchProductsDatabase",
             func=search_products_db,
             description=(
-                "Search, list, filter, or get product recommendations from the graph database. "
-                "Use this for: product listings, budget-based queries, application-based recommendations, "
-                "comparison queries (e.g. warm vs cool white), or any query that requires showing multiple products. "
-                "The tool auto-detects category, use case, and features from the query. If the user's long-term memory or context specifies a preference (like a specific category), you could explicitly set the corresponding parameter (e.g. `category` or `feature`) rather than relying purely on the current conversational text. "
+                "Search, list, filter, or get recommendations from the database. "
+                "Use this for: item listings, budget-based queries, application-based recommendations, "
+                "comparison queries, or any query that requires showing multiple items. "
+                "The tool auto-detects category, use case, and features from the query. If the user's long-term memory or context specifies a preference, you could explicitly set the corresponding parameter rather than relying purely on the current conversational text. "
                 "CRITICAL: If the user asks to search 'in all collections' or 'across all categories', DO NOT call this tool multiple times. Simply call it ONCE with `category=None` and `collection=None`."
                 "\n\nParameters:"
-                "\n- query (str): ONLY use this for exact PROPER NOUNS representing specific product names or brands. DO NOT pass generic words, locations, applications, or features here. If you have a generic term, use the `feature` or `use_case` parameters instead and LEAVE THIS EMPTY."
+                "\n- query (str): ONLY use this for exact PROPER NOUNS representing specific item names or brands. DO NOT pass generic words, locations, applications, or features here. If you have a generic term, use the `feature` or `use_case` parameters instead and LEAVE THIS EMPTY."
                 "\n- category (str): explicit collection override."
                 "\n- collection (str): filter by collection name."
                 "\n- collections (list[str]): filter by multiple collections at once."
                 f"\n- feature (str): explicit filter for a physical feature. Valid options: {', '.join(AgentConfig.features) if AgentConfig.features else ''}."
-                f"\n- use_case (str): explicit filter for where the light will be used. Valid options: {', '.join(AgentConfig.use_cases) if AgentConfig.use_cases else ''}."
-                "\n- spec (str): technical spec filter. Examples: 'IP65', '12W'"
+                f"\n- use_case (str): explicit filter for where the item will be used. Valid options: {', '.join(AgentConfig.use_cases) if AgentConfig.use_cases else ''}."
+                "\n- spec (str): technical spec filter."
                 "\n- min_price / max_price (int): price range"
-                "\n- sort_by (str): rating_desc, rating_asc, price_asc, price_desc, reviews_desc, wattage_asc, wattage_desc"
+                "\n- sort_by (str): rating_desc, rating_asc, price_asc, price_desc, reviews_desc"
                 "\n- limit (int): number of results (default 100)"
                 "\n\nEXAMPLES:\n"
             ) + AgentConfig.brain.get("tool_descriptions", {}).get("SearchProductsDatabase", ""),
@@ -585,11 +573,8 @@ def get_tools():
             func=get_product_details_db,
             description=AgentConfig.brain.get("tool_descriptions", {}).get(
                 "ProductDetailsDatabase",
-                "Use this when the user asks about ONE specific named product's details: "
-                "warranty, wattage, dimensions, material, IP rating, beam angle, lumens, "
-                "mounting type, colour temperature, or any other technical specification. "
-                "Examples: 'What is the warranty of the Artoo light?', "
-                "'Is the Athena light available in warm white?'"
+                "Use this when the user asks about ONE specific named item's details: "
+                "warranty, dimensions, material, or any other technical specification."
             ),
             return_direct=False
         ),
@@ -602,8 +587,8 @@ def get_tools():
                 "shipping, delivery time, delivery charges, order tracking, return policy, "
                 "replacement process, exchange process, warranty claim procedure, "
                 "bulk pricing, dealer/distributor pricing, contractor rates, "
-                "damaged product on arrival, wrong item received, required documents for claims. "
-                "Do NOT use for product-specific specs or features."
+                "damaged item on arrival, wrong item received, required documents for claims. "
+                "Do NOT use for item-specific specs or features."
             )
         ),
         Tool(
@@ -611,12 +596,10 @@ def get_tools():
             func=query_product_faqs,
             description=AgentConfig.brain.get("tool_descriptions", {}).get(
                 "ProductAdviceDatabase",
-                "Use this for general product FAQs, installation guidance, and suitability advice "
-                "NOT tied to a specific named product: "
-                "'Is installation easy?', 'Can I install it myself?', "
-                "'Does the package include mounting hardware?', "
-                "'Can it be connected to a timer or smart switch?', "
-                "'Is it suitable for coastal areas?'"
+                "Use this for general FAQs, installation guidance, and suitability advice "
+                "NOT tied to a specific named item: "
+                "'Is setup easy?', 'Can I install it myself?', "
+                "'Does the package include mounting hardware?'"
             )
         ),
         Tool(
@@ -625,9 +608,8 @@ def get_tools():
             description=AgentConfig.brain.get("tool_descriptions", {}).get(
                 "GeneralKnowledgeDatabase",
                 "Use this to search for active offers, discounts, promotions, and coupon codes. "
-                "Also use this for educational, comparison, and 'how-to' questions about lighting concepts "
-                "that are NOT about a specific product and NOT a company policy. "
-                "Examples: 'Are there any offers on solar lights?', 'How to choose outdoor lighting?'"
-            ).format(brand_name=AgentConfig.brain.get('tenant', {}).get('name', 'Inventaa'))
+                "Also use this for educational, comparison, and 'how-to' questions "
+                "that are NOT about a specific item and NOT a company policy."
+            ).format(brand_name=brand_name)
         )
     ]

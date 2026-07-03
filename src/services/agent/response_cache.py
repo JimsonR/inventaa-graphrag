@@ -24,8 +24,9 @@ def _get_index():
     if _index is None:
         try:
             from pinecone import Pinecone
+            from src.services.agent.config import AgentConfig
             api_key = os.getenv("PINECONE_API_KEY")
-            index_name = os.getenv("PINECONE_INDEX_NAME")
+            index_name = AgentConfig.get_pinecone_index()
             if not api_key or not index_name:
                 logger.warning("[Cache] PINECONE_API_KEY or PINECONE_INDEX_NAME not set. Cache disabled.")
                 return None
@@ -99,7 +100,7 @@ def cache_lookup(
             # Parse response
             response_raw = metadata.get("response", "")
             response_type = metadata.get("response_type", "text")
-            if response_type == "products":
+            if response_type in ("products", "structured_data"):
                 try:
                     response = json.loads(response_raw)
                 except (json.JSONDecodeError, TypeError):
@@ -144,7 +145,7 @@ def cache_store(
         response: The response (str for text, list/dict for products).
         tenant_id: Tenant ID for isolation.
         intent: The classified intent.
-        response_type: "text" or "products".
+        response_type: "text", "products", or "structured_data".
         ttl: Time-to-live in seconds (default 24h).
         skip_intents: List of intents to skip caching for.
     """

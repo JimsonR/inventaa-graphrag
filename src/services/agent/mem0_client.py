@@ -24,8 +24,9 @@ def get_mem0_client() -> Optional[Memory]:
     azure_endpoint = os.getenv("AZURE_AI_ENDPOINT")
     
     # Required for Pinecone
+    from src.services.agent.config import AgentConfig
     pinecone_api_key = os.getenv("PINECONE_API_KEY")
-    pinecone_index = os.getenv("PINECONE_INDEX_NAME")
+    pinecone_index = AgentConfig.get_pinecone_index()
     
     # Optional defaults
     azure_api_version = os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01")
@@ -146,8 +147,8 @@ def store_long_term_context(query: str, response: str, user_id: str):
         
     try:
         # We only pass the user's query to Mem0. 
-        # Passing the agent's response (especially if it's a huge product JSON)
-        # pollutes Mem0 with facts about our products rather than facts about the user.
+        # Passing the agent's response (especially if it's a huge structured JSON)
+        # pollutes Mem0 with catalog facts rather than facts about the user.
         client.add(query, user_id=user_id)
         logger.info(f"Successfully stored user query in Mem0 for user {user_id}")
     except Exception as e:

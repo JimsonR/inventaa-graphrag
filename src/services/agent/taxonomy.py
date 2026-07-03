@@ -16,8 +16,12 @@ def sync_taxonomy():
 
     try:
         pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-        index_name = os.getenv("PINECONE_INDEX_NAME", "inventaa")
+        index_name = AgentConfig.get_pinecone_index()
         
+        if not index_name:
+            logger.warning("PINECONE_INDEX_NAME not configured. Skipping taxonomy sync.")
+            return
+
         if index_name not in pc.list_indexes().names():
             logger.warning(f"Pinecone index '{index_name}' not found. Skipping taxonomy sync.")
             return
@@ -74,7 +78,9 @@ def _get_pinecone_index():
     global _pinecone_index
     if _pinecone_index is None:
         pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-        index_name = os.getenv("PINECONE_INDEX_NAME", "inventaa")
+        index_name = AgentConfig.get_pinecone_index()
+        if not index_name:
+            raise ValueError("PINECONE_INDEX_NAME is not configured in environment or brain.")
         _pinecone_index = pc.Index(index_name)
     return _pinecone_index
 
@@ -129,9 +135,9 @@ def extract_taxonomy_parameters(query_text: str, candidate_tags: dict) -> Taxono
             "Task: Act as a strict filter. Read the candidate tags and select the exact correct category, use_case, or feature that matches the user's query.\n"
             "Rules:\n"
             "1. You MUST pick the exact string from the Candidate Tags provided. Do not invent tags.\n"
-            "2. If the user's query exactly or near-exactly matches a Candidate Tag (e.g. 'outdoor led gate lamp lights' -> 'Outdoor LED Gate Lamp Lights'), select it immediately and DO NOT set clarify=True.\n"
-            "3. Reject false-positives (e.g. if query says 'outdoor wall' and lists suggest 'indoor ceiling', ignore it).\n"
-            "4. If and only if the query is very broad (e.g. 'lights') and multiple Candidate Tags apply equally without any one being a clear best match, set clarify=True.\n"
+            "2. If the user's query exactly or near-exactly matches a Candidate Tag, select it immediately and DO NOT set clarify=True.\n"
+            "3. Reject false-positives (e.g. if query asks for one category/feature and candidate lists suggest an incompatible one, ignore it).\n"
+            "4. If and only if the query is very broad and multiple Candidate Tags apply equally without any one being a clear best match, set clarify=True.\n"
             "5. Return null for fields that have no perfect or clear match."
         )
         

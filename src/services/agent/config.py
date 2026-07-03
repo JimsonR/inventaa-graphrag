@@ -1,6 +1,7 @@
 import os
 import logging
-from langchain_neo4j import Neo4jGraph, Neo4jVector
+from typing import Optional, List, Dict, Any, Set
+from langchain_neo4j import Neo4jGraph
 from langchain_openai import AzureChatOpenAI, AzureOpenAIEmbeddings
 
 logger = logging.getLogger(__name__)
@@ -19,17 +20,55 @@ class AgentConfig:
     collections = []
     use_cases = []
     features = []
-    category_groups = {}  # {"Outdoor": ["LED Outdoor Wall Light", ...], ...}
-    top_level_groups = []  # ["Outdoor", "Indoor", "Solar"]
-    product_options = [] # Dynamic options like [{'rel_type': 'AVAILABLE_IN_WATTAGE', 'target_label': 'WattageOption', 'alias': 'wattage'}, ...]
-    collection_to_skus = {} # {"Solar Lights": ["32a-s663", ...], ...}
-    collection_to_sqlite_cats = {} # {"Solar Lights": {"Solar Lights"}, ...}
+    category_groups = {}  # Map of top-level category groups to child collections
+    top_level_groups = []  # Top-level category groups
+    product_options = [] # Dynamic options discovered from graph schema
+    collection_to_skus = {} # Map of collection names to SKUs
+    collection_to_sqlite_cats = {} # Map of collection names to SQLite categories
     
     # YAML Configuration
     brain = {}
     
     # Dependencies
     memory_provider = None
+
+    @classmethod
+    def get_brand_name(cls) -> str:
+        return cls.brain.get("tenant", {}).get("name", os.getenv("TENANT_NAME", "The Brand"))
+
+    @classmethod
+    def get_brand_description(cls) -> str:
+        return cls.brain.get("tenant", {}).get("description", os.getenv("TENANT_DESCRIPTION", "an AI assistant"))
+
+    @classmethod
+    def get_currency_symbol(cls) -> str:
+        return cls.brain.get("tenant", {}).get("currency_symbol", os.getenv("CURRENCY_SYMBOL", "$"))
+
+    @classmethod
+    def get_stop_words(cls) -> set:
+        default_stop = ["the", "a", "an", "and", "or", "for", "of", "in", "with", "by", "from", "show", "me", "any", "on", "product", "products"]
+        return set(cls.brain.get("search_heuristics", {}).get("stop_words", default_stop))
+
+    @classmethod
+    def get_detail_stop_words(cls) -> set:
+        default_stop = ["the", "a", "an", "and", "or", "for", "of", "in", "with", "by", "from"]
+        return set(cls.brain.get("search_heuristics", {}).get("detail_stop_words", default_stop))
+
+    @classmethod
+    def get_fulltext_index(cls) -> str:
+        return os.getenv("NEO4J_FULLTEXT_INDEX", cls.brain.get("neo4j", {}).get("fulltext_index", "product_name_ft"))
+
+    @classmethod
+    def get_faq_index(cls) -> str:
+        return os.getenv("NEO4J_FAQ_INDEX", cls.brain.get("neo4j", {}).get("faq_index", "faq_vector"))
+
+    @classmethod
+    def get_pinecone_index(cls) -> Optional[str]:
+        return os.getenv("PINECONE_INDEX_NAME", cls.brain.get("pinecone", {}).get("index_name", None))
+
+    @classmethod
+    def get_cache_skip_intents(cls) -> list:
+        return cls.brain.get("cache", {}).get("skip_intents", ["detail", "search", "policy"])
 
     @classmethod
     def initialize(cls):
@@ -97,7 +136,7 @@ class AgentConfig:
                 cls.use_cases = sorted(row.get("ucs", []))
                 cls.features = sorted(row.get("feats", []))    
             
-            # Load Level 1 category groups (Outdoor, Indoor, Solar) and their Level 2 collections
+            # Load top-level category groups and their child collections
             group_res = cls.graph.query("""
                 MATCH (cg:CategoryGroup)-[:CONTAINS]->(c:Collection)
                 WHERE cg.is_top_level = true
@@ -141,7 +180,7 @@ class AgentConfig:
                 for row in rel_res:
                     rel_type = row.get("rel_type")
                     if not rel_type: continue
-                    # Extract the attribute name from the relationship, e.g. AVAILABLE_IN_WATTAGE -> wattage
+                    # Extract attribute name from relationship, e.g. AVAILABLE_IN_<ATTR> -> <attr>
                     alias = rel_type.replace("AVAILABLE_IN_", "").lower()
                     cls.product_options.append({
                         "rel_type": rel_type,

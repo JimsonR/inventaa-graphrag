@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Optional, List, Any
+from typing import Optional, List
 from fastapi import APIRouter, Query, HTTPException, status
 from pydantic import BaseModel, Field
 
