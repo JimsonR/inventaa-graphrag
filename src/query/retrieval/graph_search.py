@@ -51,7 +51,7 @@ def graph_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
                 return []
 
         # 2. Relational Traversal: Category -> Product -> Dynamic Options
-        tenant_id = tenant_context.get() or os.getenv("TENANT_ID") or AgentConfig.brain.get("tenant", {}).get("id", "inventaa")
+        tenant_id = tenant_context.get() or os.getenv("TENANT_ID") or AgentConfig.brain.get("tenant", {}).get("id", "default")
         filters = intent_data.get("filters", {}) or {}
         cats_list = intent_data.get("category_keywords", []) or []
         cat_filter = filters.get("category")
@@ -105,7 +105,7 @@ def graph_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
 
         if conds:
             cypher_parts.append("WITH p, " + " AND ".join(conds) + " AS match_flag WHERE match_flag")
-        elif not opt_aliases and not preferences:
+        elif not conds:
             logger.info("[DEBUG-NEO4J] No category/feature/option conditions specified for relational search; returning empty list.")
             return []
 

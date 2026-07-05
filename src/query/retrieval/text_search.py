@@ -60,12 +60,16 @@ def _hydrate_product_model(prod: Product) -> Dict[str, Any]:
     specs_dict = {s.spec_key: s.spec_value for s in (prod.specs or [])[:6]}
     variants_list = []
     for v in (prod.variants or [])[:4]:
-        variants_list.append({
-            "sku": v.variant_sku,
-            "color": getattr(v, "color_option", None),
-            "wattage": getattr(v, "wattage_option", None),
-            "price": v.price_num
-        })
+        v_dict = {"sku": v.variant_sku, "price": v.price_num}
+        if hasattr(v, "__table__"):
+            for col in v.__table__.columns:
+                if col.name.endswith("_option"):
+                    v_dict[col.name.replace("_option", "")] = getattr(v, col.name, None)
+        else:
+            for attr in dir(v):
+                if attr.endswith("_option") and not attr.startswith("_"):
+                    v_dict[attr.replace("_option", "")] = getattr(v, attr, None)
+        variants_list.append(v_dict)
     return {
         "sku": prod.sku,
         "name": prod.name,

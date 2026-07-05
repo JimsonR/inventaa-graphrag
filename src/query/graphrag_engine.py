@@ -181,15 +181,24 @@ class GraphRAGEngine:
         intent = QueryIntent(intent_data.get("intent", "unknown"))
         logger.info(f"Classified Intent: {intent} | Keywords: {intent_data.get('category_keywords')} {intent_data.get('feature_keywords')}")
 
-        if intent == QueryIntent.BROWSE_CATEGORY:
+        is_broad_query = (
+            intent in (QueryIntent.FIND_PRODUCT, QueryIntent.BROWSE_CATEGORY, QueryIntent.UNKNOWN)
+            and not cat_kws
+            and not intent_data.get("feature_keywords")
+            and not intent_data.get("product_name")
+            and not filters.get("category")
+            and not filters.get("brand")
+        )
+
+        if intent == QueryIntent.BROWSE_CATEGORY or is_broad_query:
 
             top_groups = [g.lower() for g in AgentConfig.top_level_groups]
             is_top_level = not filters.get("category") and (
                 str(filters.get("application") or "").lower() in top_groups
                 or any(k.strip().lower() in top_groups for k in cat_kws)
             )
-            if is_top_level:
-                logger.info(f"Detected TOP-LEVEL category navigation query for keywords: {cat_kws} | Application: {filters.get('application')}")
+            if is_top_level or is_broad_query:
+                logger.info(f"Detected TOP-LEVEL / BROAD category navigation query for keywords: {cat_kws} | Intent: {intent}")
                 app = str(filters.get("application") or "").lower()
 
                 lines = ["AVAILABLE SPECIALIZED COLLECTIONS (Do NOT list individual items or prices; instead, introduce these available collections clearly and ask the customer which collection they would like to explore):"]
@@ -214,7 +223,9 @@ class GraphRAGEngine:
                     except Exception as e:
                         logger.warning(f"Could not store interaction: {e}")
 
-                return QueryResult(intent=intent, products=[], context_text=context_text, response=response, product_links=[])
+                return QueryResult(intent=QueryIntent.BROWSE_CATEGORY, products=[], context_text=context_text, response=response, product_links=[])
+
+        if intent == QueryIntent.BROWSE_CATEGORY:
 
             hydrated_products = self._category_browse_from_sqlite(cat_kws, intent_data.get("preferences", {}))
             if hydrated_products:
