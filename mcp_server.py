@@ -59,7 +59,7 @@ mcp.http_app = _cors_http_app
 # ==========================================
 
 @mcp.tool()
-async def search_catalog(query: str, limit: int = 6, session_id: Optional[str] = None) -> Dict[str, Any]:
+async def search_catalog(query: str, limit: int = 6, session_id: Optional[str] = None, tenant_id: Optional[str] = None) -> Dict[str, Any]:
     """Unified AI Agent endpoint for all customer queries (products, policies, advice, and conversation flow).
     
     This tool acts as our Tri-Store Linear GraphRAG orchestrator. It automatically:
@@ -72,11 +72,12 @@ async def search_catalog(query: str, limit: int = 6, session_id: Optional[str] =
         query: User input query (e.g., 'give me athena lights', 'what is your return policy?', 'solar gate lights under 1500').
         limit: Maximum number of authoritative products to return (default: 6).
         session_id: Optional session identifier for conversational continuity and DB memory check.
+        tenant_id: Optional tenant identifier to scope search to a specific storefront or brand.
     """
     try:
         from src.query.graphrag_engine import GraphRAGEngine
         engine = GraphRAGEngine()
-        result = await engine.query(user_query=query, session_id=session_id)
+        result = await engine.query(user_query=query, session_id=session_id, tenant_id=tenant_id)
         return {
             "status": "success",
             "intent": result.intent,
@@ -94,13 +95,17 @@ async def search_catalog(query: str, limit: int = 6, session_id: Optional[str] =
         }
 
 @mcp.tool()
-def get_product_details(sku: str) -> Dict[str, Any]:
+def get_product_details(sku: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
     """Get authoritative product details, pricing, discounts, ratings, and technical specs by SKU.
     
     Args:
         sku: The unique product identifier (e.g., '18C-2042', 'MAR03C', 'GAT05').
+        tenant_id: Optional tenant identifier to scope lookup to a specific storefront or brand.
     """
     try:
+        if tenant_id:
+            from src.services.agent.context import tenant_context
+            tenant_context.set(tenant_id)
         from src.services.agent.config import AgentConfig
         from src.db.database import Product
         

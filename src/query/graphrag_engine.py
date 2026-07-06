@@ -137,9 +137,12 @@ class GraphRAGEngine:
         """Delegates category browsing to the retrieval text search module."""
         return category_browse_from_sqlite(category_keywords, preferences)
 
-    async def query(self, user_query: str, session_id: Optional[str] = None) -> QueryResult:
+    async def query(self, user_query: str, session_id: Optional[str] = None, tenant_id: Optional[str] = None) -> QueryResult:
         """Full GraphRAG pipeline: check DB history -> taxonomy -> classify -> retrieve -> fuse -> hydrate -> synthesize."""
-        logger.info(f"GraphRAG query: {user_query!r} | session_id: {session_id}")
+        if tenant_id:
+            from src.services.agent.context import tenant_context
+            tenant_context.set(tenant_id)
+        logger.info(f"GraphRAG query: {user_query!r} | session_id: {session_id} | tenant_id: {tenant_id}")
 
         # Step 0: Check conversation history from DB if session_id is provided
         history_context = ""
