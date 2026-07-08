@@ -59,12 +59,12 @@ mcp.http_app = _cors_http_app
 # ==========================================
 
 @mcp.tool()
-async def search_catalog(query: str, limit: int = 6, session_id: Optional[str] = None, tenant_id: Optional[str] = None) -> Dict[str, Any]:
+async def search_catalog(query: str, limit: int = 6, session_id: Optional[str] = None, tenant_id: Optional[str] = None, intent_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Unified AI Agent endpoint for all customer queries (products, policies, advice, and conversation flow).
     
     This tool acts as our Tri-Store Linear GraphRAG orchestrator. It automatically:
     1. Checks user conversation history from SQLite database when `session_id` is provided.
-    2. Classifies user intent (`find_product`, `get_product_info`, `check_policy`, `get_advice`).
+    2. Classifies user intent (`find_product`, `get_product_info`, `check_policy`, `get_advice`), or uses pre-computed client `intent_data`.
     3. Routes internally: queries Neo4j Lucene Fulltext index + Pinecone vector store for products, OR queries FAQ/policy embeddings for company operational rules (returns, warranties, shipping).
     4. Hydrates authoritative pricing, MRP, discounts, and ratings from SQLite.
     
@@ -73,11 +73,12 @@ async def search_catalog(query: str, limit: int = 6, session_id: Optional[str] =
         limit: Maximum number of authoritative products to return (default: 6).
         session_id: Optional session identifier for conversational continuity and DB memory check.
         tenant_id: Optional tenant identifier to scope search to a specific storefront or brand.
+        intent_data: Optional pre-classified intent dictionary from the client to skip internal LLM classification.
     """
     try:
         from src.query.graphrag_engine import GraphRAGEngine
         engine = GraphRAGEngine()
-        result = await engine.query(user_query=query, session_id=session_id, tenant_id=tenant_id)
+        result = await engine.query(user_query=query, session_id=session_id, tenant_id=tenant_id, intent_data=intent_data)
         return {
             "status": "success",
             "intent": result.intent,
@@ -93,6 +94,28 @@ async def search_catalog(query: str, limit: int = 6, session_id: Optional[str] =
             "products": [],
             "response": "We encountered an issue searching the catalog. Please try again."
         }
+
+@mcp.tool()
+async def get_taxonomy_context(query: str, threshold: float = 0.80) -> Dict[str, Any]:
+    """Retrieve database taxonomy candidates (categories, features, use_cases) matching a query.
+    
+    Useful for external client agents (like WhatsApp bot or UI dialog state trackers) to map user language
+    to exact database item context and valid category/feature names before formulating an intent or search.
+    
+    Args:
+        query: User query text or keywords to resolve against the database taxonomy.
+        threshold: Similarity threshold between 0.0 and 1.0 (default: 0.80).
+    """
+    try:
+        from src.services.agent.taxonomy import fetch_taxonomy_candidates
+        from src.services.agent.config import AgentConfig
+        import asyncio
+        query_embedding = await asyncio.to_thread(AgentConfig.embeddings.embed_query, query)
+        hints = await asyncio.to_thread(fetch_taxonomy_candidates, query_embedding, threshold)
+        return {"status": "success", "taxonomy": hints or {}}
+    except Exception as e:
+        logger.error(f"Error executing get_taxonomy_context: {e}", exc_info=True)
+        return {"status": "failed", "error": str(e), "taxonomy": {}}
 
 @mcp.tool()
 def get_product_details(sku: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:

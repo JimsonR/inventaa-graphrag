@@ -137,7 +137,7 @@ class GraphRAGEngine:
         """Delegates category browsing to the retrieval text search module."""
         return category_browse_from_sqlite(category_keywords, preferences)
 
-    async def query(self, user_query: str, session_id: Optional[str] = None, tenant_id: Optional[str] = None) -> QueryResult:
+    async def query(self, user_query: str, session_id: Optional[str] = None, tenant_id: Optional[str] = None, intent_data: Optional[dict] = None) -> QueryResult:
         """Full GraphRAG pipeline: check DB history -> taxonomy -> classify -> retrieve -> fuse -> hydrate -> synthesize."""
         if tenant_id:
             from src.services.agent.context import tenant_context
@@ -169,8 +169,16 @@ class GraphRAGEngine:
         except Exception as e:
             logger.warning(f"Taxonomy resolution failed (non-fatal): {e}")
 
-        # Step 1: Classify intent
-        intent_data = await self.classify_intent(user_query, history_context=history_context, taxonomy_hints=taxonomy_hints)
+        # Step 1: Classify intent (or use pre-classified client intent_data if provided)
+        if intent_data and isinstance(intent_data, dict) and intent_data.get("intent"):
+            logger.info(f"[GraphRAG] Using pre-classified client intent_data: {intent_data.get('intent')} (skipping internal LLM intent classification)")
+            intent_data.setdefault("category_keywords", [])
+            intent_data.setdefault("feature_keywords", [])
+            intent_data.setdefault("filters", {})
+            intent_data.setdefault("preferences", {})
+        else:
+            intent_data = await self.classify_intent(user_query, history_context=history_context, taxonomy_hints=taxonomy_hints)
+
         cat_kws = intent_data.setdefault("category_keywords", [])
         filters = intent_data.get("filters", {}) or {}
         if filters.get("category") and filters["category"] not in cat_kws:
@@ -196,16 +204,24 @@ class GraphRAGEngine:
         if intent == QueryIntent.BROWSE_CATEGORY or is_broad_query:
 
             top_groups = [g.lower() for g in AgentConfig.top_level_groups]
-            is_top_level = not filters.get("category") and (
-                str(filters.get("application") or "").lower() in top_groups
-                or any(k.strip().lower() in top_groups for k in cat_kws)
+            query_lower = user_query.strip().lower()
+            is_top_level = (
+                any(
+                    query_lower == g or query_lower == f"{g} lights" or query_lower == f"{g} lighting" or
+                    query_lower == f"show {g}" or query_lower == f"show {g} lights" or f"{g} lights" in query_lower
+                    for g in top_groups
+                )
+                or (not filters.get("category") and (
+                    str(filters.get("application") or "").lower() in top_groups
+                    or any(k.strip().lower() in top_groups for k in cat_kws)
+                ))
             )
             if is_top_level or is_broad_query:
-                logger.info(f"Detected TOP-LEVEL / BROAD category navigation query for keywords: {cat_kws} | Intent: {intent}")
+                logger.info(f"Detected TOP-LEVEL / BROAD category navigation query for query='{user_query}' | Keywords: {cat_kws} | Intent: {intent}")
                 app = str(filters.get("application") or "").lower()
 
                 lines = ["AVAILABLE SPECIALIZED COLLECTIONS (Do NOT list individual items or prices; instead, introduce these available collections clearly and ask the customer which collection they would like to explore):"]
-                matched_groups = [g for g in AgentConfig.top_level_groups if g.lower() in app or any(g.lower() in k.lower() for k in cat_kws)]
+                matched_groups = [g for g in AgentConfig.top_level_groups if g.lower() in query_lower or g.lower() in app or any(g.lower() in k.lower() for k in cat_kws)]
                 if not matched_groups:
                     matched_groups = AgentConfig.top_level_groups or list(AgentConfig.category_groups.keys())
                 for g in matched_groups:

@@ -145,4 +145,14 @@ def test_broad_queries_trigger_category_navigation_instead_of_fallback_products(
     )
 
 
+def test_preclassified_intent_data_skips_llm_classification():
+    """Verify that passing pre-classified intent_data to GraphRAGEngine.query() bypasses internal LLM intent classification."""
+    engine_path = Path("src/query/graphrag_engine.py").read_text(encoding="utf-8")
+    mcp_path = Path("mcp_server.py").read_text(encoding="utf-8")
 
+    assert "if intent_data and isinstance(intent_data, dict) and intent_data.get(\"intent\"):" in engine_path, (
+        "GraphRAGEngine.query must check for pre-classified client intent_data before invoking LLM classification!"
+    )
+    assert "intent_data: Optional[Dict[str, Any]] = None" in mcp_path and "intent_data=intent_data" in mcp_path, (
+        "search_catalog MCP tool must accept intent_data parameter and forward it to GraphRAGEngine.query!"
+    )
