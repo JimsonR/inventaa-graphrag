@@ -14,6 +14,7 @@ from src.query.models import QueryIntent, QueryResult
 from src.query.prompts import get_intent_system_prompt, get_response_system_prompt
 from src.query.retrieval import parallel_retrieve, category_browse_from_sqlite
 from src.query.fusion import fuse_results, hydrate_from_sqlite, build_context
+from src.utils.timing import log_timing
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +28,7 @@ class GraphRAGEngine:
     def __init__(self):
         AgentConfig.initialize()
 
-    async def classify_intent(self, query: str, history_context: str = "", taxonomy_hints: dict = None) -> dict:
+    async def classify_intent(self, query: str, history_context: str = "", taxonomy_hints: dict = None, tenant_id: str = None) -> dict:
         """Use LLM to classify query intent and extract entities, factoring in conversation flow and taxonomy."""
         try:
             from langchain_core.messages import SystemMessage, HumanMessage
@@ -50,7 +51,7 @@ class GraphRAGEngine:
                 if taxonomy_hints.get("feature"):
                     taxonomy_section += f"\n  Matched Features: {taxonomy_hints['feature']}"
 
-            system_prompt = get_intent_system_prompt()
+            system_prompt = get_intent_system_prompt(tenant_id=tenant_id)
             if taxonomy_section:
                 system_prompt += taxonomy_section
 
@@ -117,6 +118,7 @@ class GraphRAGEngine:
             logger.error(f"Response synthesis error: {e}", exc_info=True)
             return f"Here are the details matching your query:\n\n{context}"
 
+    @log_timing("GraphRAGEngine.retrieve")
     async def retrieve(self, query: str, intent_data: dict):
         """Delegates parallel retrieval to the modular retrieval sub-package."""
         return await parallel_retrieve(query, intent_data)
@@ -137,6 +139,7 @@ class GraphRAGEngine:
         """Delegates category browsing to the retrieval text search module."""
         return category_browse_from_sqlite(category_keywords, preferences)
 
+    @log_timing("GraphRAGEngine.query")
     async def query(self, user_query: str, session_id: Optional[str] = None, tenant_id: Optional[str] = None, intent_data: Optional[dict] = None) -> QueryResult:
         """Full GraphRAG pipeline: check DB history -> taxonomy -> classify -> retrieve -> fuse -> hydrate -> synthesize."""
         if tenant_id:
@@ -158,26 +161,25 @@ class GraphRAGEngine:
             except Exception as e:
                 logger.warning(f"Could not load conversation history from DB for session {session_id}: {e}")
 
-        # Step 0.5: Taxonomy resolution
+        # Step 0.5 & 1: Classify intent (skip embedding, taxonomy lookup, and LLM classification if client provided intent_data)
         taxonomy_hints = {}
-        try:
-            from src.services.agent.taxonomy import fetch_taxonomy_candidates
-            query_embedding = await asyncio.to_thread(AgentConfig.embeddings.embed_query, user_query)
-            taxonomy_hints = await asyncio.to_thread(fetch_taxonomy_candidates, query_embedding, 0.80)
-            if taxonomy_hints:
-                logger.info(f"Taxonomy resolved: {taxonomy_hints}")
-        except Exception as e:
-            logger.warning(f"Taxonomy resolution failed (non-fatal): {e}")
-
-        # Step 1: Classify intent (or use pre-classified client intent_data if provided)
         if intent_data and isinstance(intent_data, dict) and intent_data.get("intent"):
-            logger.info(f"[GraphRAG] Using pre-classified client intent_data: {intent_data.get('intent')} (skipping internal LLM intent classification)")
+            logger.info(f"[GraphRAG] Using pre-classified client intent_data: {intent_data.get('intent')} (skipping taxonomy lookup & internal LLM intent classification)")
             intent_data.setdefault("category_keywords", [])
             intent_data.setdefault("feature_keywords", [])
             intent_data.setdefault("filters", {})
             intent_data.setdefault("preferences", {})
         else:
-            intent_data = await self.classify_intent(user_query, history_context=history_context, taxonomy_hints=taxonomy_hints)
+            try:
+                from src.services.agent.taxonomy import fetch_taxonomy_candidates
+                query_embedding = await asyncio.to_thread(AgentConfig.embeddings.embed_query, user_query)
+                taxonomy_hints = await asyncio.to_thread(fetch_taxonomy_candidates, query_embedding, 0.80)
+                if taxonomy_hints:
+                    logger.info(f"Taxonomy resolved: {taxonomy_hints}")
+            except Exception as e:
+                logger.warning(f"Taxonomy resolution failed (non-fatal): {e}")
+
+            intent_data = await self.classify_intent(user_query, history_context=history_context, taxonomy_hints=taxonomy_hints, tenant_id=tenant_id)
 
         cat_kws = intent_data.setdefault("category_keywords", [])
         filters = intent_data.get("filters", {}) or {}
@@ -189,7 +191,25 @@ class GraphRAGEngine:
                 if val and isinstance(val, str) and len(val.strip()) > 2 and not any(g.lower() == val.strip().lower() for g in AgentConfig.top_level_groups):
                     cat_kws.append(val.strip())
 
-        intent = QueryIntent(intent_data.get("intent", "unknown"))
+        query_clean = user_query.strip().lower()
+        for col in AgentConfig.collections:
+            if col.lower() == query_clean or col.lower() in query_clean:
+                if col not in cat_kws:
+                    cat_kws.append(col)
+                filters["category"] = col
+                logger.info(f"[GraphRAG] Direct collection match from user_query: '{col}'")
+                break
+
+        try:
+            intent = QueryIntent(intent_data.get("intent", "unknown"))
+        except ValueError:
+            intent_str = str(intent_data.get("intent", "unknown")).lower()
+            if "faq" in intent_str or "knowledge" in intent_str or "policy" in intent_str:
+                intent = QueryIntent.CHECK_POLICY
+            elif "browse" in intent_str or "category" in intent_str:
+                intent = QueryIntent.BROWSE_CATEGORY
+            else:
+                intent = QueryIntent.FIND_PRODUCT
         logger.info(f"Classified Intent: {intent} | Keywords: {intent_data.get('category_keywords')} {intent_data.get('feature_keywords')}")
 
         is_broad_query = (
@@ -205,22 +225,23 @@ class GraphRAGEngine:
 
             top_groups = [g.lower() for g in AgentConfig.top_level_groups]
             query_lower = user_query.strip().lower()
-            is_top_level = (
+            is_top_level = not filters.get("category") and (
                 any(
                     query_lower == g or query_lower == f"{g} lights" or query_lower == f"{g} lighting" or
                     query_lower == f"show {g}" or query_lower == f"show {g} lights" or f"{g} lights" in query_lower
                     for g in top_groups
                 )
-                or (not filters.get("category") and (
+                or (
                     str(filters.get("application") or "").lower() in top_groups
                     or any(k.strip().lower() in top_groups for k in cat_kws)
-                ))
+                )
             )
-            if is_top_level or is_broad_query:
+            if is_top_level or (is_broad_query and not filters.get("category")):
                 logger.info(f"Detected TOP-LEVEL / BROAD category navigation query for query='{user_query}' | Keywords: {cat_kws} | Intent: {intent}")
                 app = str(filters.get("application") or "").lower()
 
                 lines = ["AVAILABLE SPECIALIZED COLLECTIONS (Do NOT list individual items or prices; instead, introduce these available collections clearly and ask the customer which collection they would like to explore):"]
+                friendly_lines = ["Hello! We have a variety of specialized lighting collections available. Which category would you like to explore?"]
                 matched_groups = [g for g in AgentConfig.top_level_groups if g.lower() in query_lower or g.lower() in app or any(g.lower() in k.lower() for k in cat_kws)]
                 if not matched_groups:
                     matched_groups = AgentConfig.top_level_groups or list(AgentConfig.category_groups.keys())
@@ -228,11 +249,13 @@ class GraphRAGEngine:
                     cols = AgentConfig.category_groups.get(g, [])
                     if cols:
                         lines.append(f"\n{g} Collections:")
+                        friendly_lines.append(f"\n*{g} Collections:*")
                         for c in cols:
                             lines.append(f"• {c}")
+                            friendly_lines.append(f"• {c}")
 
                 context_text = "\n".join(lines)
-                response = await self.synthesize_response(user_query, context_text, intent_data, history_context=history_context, taxonomy_hints=taxonomy_hints)
+                response = "\n".join(friendly_lines)
 
                 if session_id and AgentConfig.memory_provider and hasattr(AgentConfig.memory_provider, "add_message"):
                     try:
@@ -249,7 +272,7 @@ class GraphRAGEngine:
             hydrated_products = self._category_browse_from_sqlite(cat_kws, intent_data.get("preferences", {}))
             if hydrated_products:
                 context_text = self._build_context(hydrated_products, [])
-                response = await self.synthesize_response(user_query, context_text, intent_data, history_context=history_context, taxonomy_hints=taxonomy_hints)
+                response = f"Found {len(hydrated_products)} products matching your category."
 
                 if session_id and AgentConfig.memory_provider and hasattr(AgentConfig.memory_provider, "add_message"):
                     try:
@@ -289,8 +312,12 @@ class GraphRAGEngine:
         # Step 5: Build context
         context_text = self._build_context(hydrated_products, non_prod_contexts)
 
-        # Step 6: Response synthesis
-        response = await self.synthesize_response(user_query, context_text, intent_data, history_context=history_context, taxonomy_hints=taxonomy_hints)
+        # Step 6: Response synthesis (fast-path skip LLM synthesis for FIND_PRODUCT when structured products found)
+        if intent == QueryIntent.FIND_PRODUCT and hydrated_products:
+            logger.info(f"[GraphRAG] Fast-path: Skipping LLM synthesis for {len(hydrated_products)} structured products")
+            response = f"Found {len(hydrated_products)} matching products."
+        else:
+            response = await self.synthesize_response(user_query, context_text, intent_data, history_context=history_context, taxonomy_hints=taxonomy_hints)
 
         # Step 7: Save interaction to memory provider
         if session_id and AgentConfig.memory_provider and hasattr(AgentConfig.memory_provider, "add_message"):

@@ -107,11 +107,15 @@ def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
             q = session.query(Product)
             if prod_name:
                 q = q.filter(or_(Product.name.ilike(f"%{prod_name}%"), Product.sku.ilike(f"%{prod_name}%")))
-            elif all_cats and not tokens:
+            elif all_cats:
                 cat_conds = []
                 for c in all_cats:
                     cat_conds.append(Product.categories.ilike(f"%{c}%"))
                     cat_conds.append(Product.use_cases.ilike(f"%{c}%"))
+                    for col_name, sqlite_cats in AgentConfig.collection_to_sqlite_cats.items():
+                        if c.lower() == col_name.lower() or c.lower() in col_name.lower() or col_name.lower() in c.lower():
+                            for sc in sqlite_cats:
+                                cat_conds.append(Product.categories.ilike(f"%{sc}%"))
                 if cat_conds:
                     q = q.filter(or_(*cat_conds))
             elif tokens:

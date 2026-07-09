@@ -22,11 +22,49 @@ def get_stopwords() -> Set[str]:
     return base_stopwords.union(config_stopwords)
 
 
-def get_intent_system_prompt() -> str:
+import time
+
+_PROMPT_CACHE = {}
+
+
+def get_intent_system_prompt(tenant_id: str = None) -> str:
     """
-    Returns the intent classification system instructions dynamically branded for the active tenant.
+    Returns the intent classification system instructions dynamically loaded for the active tenant.
+    Priority:
+      1. Supabase prompt_templates table or tenants table (if tenant_id and memory_provider configured)
+      2. AgentConfig custom prompt from domain config
+      3. Branded default template
     """
     brand = AgentConfig.get_brand_name()
+    currency = AgentConfig.get_currency_symbol()
+
+    if tenant_id and AgentConfig.memory_provider and hasattr(AgentConfig.memory_provider, "_supabase"):
+        cache_key = f"intent_prompt::{tenant_id}"
+        cached = _PROMPT_CACHE.get(cache_key)
+        if cached and cached[1] > time.time():
+            return cached[0]
+        try:
+            sb = AgentConfig.memory_provider._supabase
+            res = sb.table("prompt_templates").select("prompt_text").eq("tenant_id", tenant_id).in_("prompt_name", ["intent_system_prompt", "intent_system", "graphrag_intent_prompt"]).eq("status", "active").order("version", desc=True).limit(1).execute()
+            if res.data and res.data[0].get("prompt_text"):
+                txt = res.data[0]["prompt_text"].replace("{brand}", brand).replace("{brand_name}", brand).replace("{currency}", currency)
+                _PROMPT_CACHE[cache_key] = (txt, time.time() + 300)
+                return txt
+            res2 = sb.table("tenants").select("intent_system_prompt, graphrag_system_prompt").eq("tenant_id", tenant_id).limit(1).execute()
+            if res2.data:
+                row = res2.data[0]
+                prompt_txt = row.get("graphrag_system_prompt") or row.get("intent_system_prompt")
+                if prompt_txt:
+                    txt = prompt_txt.replace("{brand}", brand).replace("{brand_name}", brand).replace("{currency}", currency)
+                    _PROMPT_CACHE[cache_key] = (txt, time.time() + 300)
+                    return txt
+        except Exception:
+            pass
+
+    custom_prompt = AgentConfig.brain.get("prompts", {}).get("intent_system")
+    if custom_prompt:
+        return custom_prompt.replace("{brand}", brand).replace("{brand_name}", brand).replace("{currency}", currency)
+
     return f"""You are an intent classifier for an e-commerce sales assistant ({brand}).
 Classify the user's query into exactly one of these intents:
 - browse_category: User wants to SEE ALL products in a category/collection (e.g., "show me all items in collection X", "what options do you have in category Y?", "list all items in department Z"). Use this when the user is browsing or exploring an entire product category without specifying a single product name or narrow spec filter.
@@ -73,14 +111,14 @@ Respond ONLY with valid JSON. Example:
 
 def get_response_system_prompt() -> str:
     """
-    Returns the sales assistant system instructions dynamically branded for the active tenant.
+    Returns the sales assistant system instructions dynamically branded for the active tenant and domain.
     """
     brand = AgentConfig.get_brand_name()
     currency = AgentConfig.get_currency_symbol()
     custom_prompt = AgentConfig.brain.get("prompts", {}).get("response_system")
     
     if custom_prompt:
-        return custom_prompt
+        return custom_prompt.replace("{brand}", brand).replace("{brand_name}", brand).replace("{currency}", currency)
 
     return f"""You are an expert AI sales assistant for {brand}.
 You help customers discover products, explain specifications, answer FAQ/policy questions, and guide purchases.

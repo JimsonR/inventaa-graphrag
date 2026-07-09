@@ -79,10 +79,30 @@ class AgentConfig:
         config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "agent_config.yaml")
         try:
             with open(config_path, "r", encoding="utf-8") as f:
-                cls.brain = yaml.safe_load(f)
+                cls.brain = yaml.safe_load(f) or {}
         except Exception as e:
             logger.error(f"Failed to load agent_config.yaml at {config_path}: {e}")
             cls.brain = {}
+
+        domain = os.getenv("DOMAIN") or cls.brain.get("tenant", {}).get("domain") or cls.brain.get("domain", "ecommerce")
+        domain_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "domains", f"{domain}.yaml")
+        if os.path.exists(domain_path):
+            try:
+                with open(domain_path, "r", encoding="utf-8") as f:
+                    domain_config = yaml.safe_load(f) or {}
+                for key, val in domain_config.items():
+                    if isinstance(val, dict):
+                        if key not in cls.brain or not isinstance(cls.brain[key], dict):
+                            cls.brain[key] = val
+                        else:
+                            merged = val.copy()
+                            merged.update(cls.brain[key])
+                            cls.brain[key] = merged
+                    elif key not in cls.brain:
+                        cls.brain[key] = val
+                logger.info(f"Loaded domain configuration from {domain_path} (domain: {domain})")
+            except Exception as e:
+                logger.error(f"Failed to load domain config at {domain_path}: {e}")
 
         logger.info("Initializing AgentConfig dependencies...")
 

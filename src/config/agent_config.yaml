@@ -1,6 +1,7 @@
 tenant:
   id: "inventaa"
   name: "Inventaa"
+  domain: "ecommerce"
   description: "an Indian LED lighting brand"
   aliases: 
     - "tenant_swadhya_foods_001"

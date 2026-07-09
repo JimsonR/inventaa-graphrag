@@ -33,8 +33,8 @@ def vector_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
                     results.append({"type": "faq", "text": doc.page_content, "score": score, "metadata": doc.metadata})
             return results
 
-        # 3. Product search intent -> search FAQ vectors to find matching catalog item references
-        if AgentConfig.product_faq_vector_store:
+        # 3. Product info / detail documentation intent -> search FAQ vectors for spec sheets and manual references
+        if intent == QueryIntent.GET_PRODUCT_INFO and AgentConfig.product_faq_vector_store:
             logger.info(f"[DEBUG-VECTOR] Executing similarity search over FAQ vector store for query: '{query}'")
             docs = AgentConfig.product_faq_vector_store.similarity_search_with_score(query, k=5)
             for doc, score in docs:
@@ -59,6 +59,7 @@ def vector_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
                         "score": score
                     })
             logger.info(f"[DEBUG-VECTOR] FAQ search matched {len(results)} references. Top slugs: {[r.get('sku_slug') for r in results[:5]]}")
+        
         return results
     except Exception as e:
         logger.error(f"Vector search error: {e}", exc_info=True)

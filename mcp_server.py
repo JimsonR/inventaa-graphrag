@@ -59,7 +59,14 @@ mcp.http_app = _cors_http_app
 # ==========================================
 
 @mcp.tool()
-async def search_catalog(query: str, limit: int = 6, session_id: Optional[str] = None, tenant_id: Optional[str] = None, intent_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def search_catalog(
+    query: str,
+    limit: int = 6,
+    session_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    intent_data: Optional[Dict[str, Any]] = None,
+    dialogue_state: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """Unified AI Agent endpoint for all customer queries (products, policies, advice, and conversation flow).
     
     This tool acts as our Tri-Store Linear GraphRAG orchestrator. It automatically:
@@ -74,8 +81,16 @@ async def search_catalog(query: str, limit: int = 6, session_id: Optional[str] =
         session_id: Optional session identifier for conversational continuity and DB memory check.
         tenant_id: Optional tenant identifier to scope search to a specific storefront or brand.
         intent_data: Optional pre-classified intent dictionary from the client to skip internal LLM classification.
+        dialogue_state: Optional dialogue state dictionary from the client.
     """
     try:
+        if dialogue_state and not intent_data:
+            intent_data = {
+                "intent": str(dialogue_state.get("intent", "find_product")).lower(),
+                "category_keywords": [dialogue_state["category"]] if dialogue_state.get("category") else [],
+                "feature_keywords": [],
+                "filters": {}
+            }
         from src.query.graphrag_engine import GraphRAGEngine
         engine = GraphRAGEngine()
         result = await engine.query(user_query=query, session_id=session_id, tenant_id=tenant_id, intent_data=intent_data)
