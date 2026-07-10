@@ -1,22 +1,22 @@
 import logging
 import os
 from pinecone import Pinecone
-from src.services.agent.config import AgentConfig
+from src.services.agent.config import TenantConfig, AgentConfig
 
 logger = logging.getLogger(__name__)
 
 def sync_taxonomy():
     """
-    Embeds collections, features, and use_cases and upserts them to Pinecone.
+    Embeds categories/collections, features, and use_cases and upserts them to Pinecone.
     Uses the 'taxonomy-cache' namespace.
     """
-    if not AgentConfig.collections and not AgentConfig.features and not AgentConfig.use_cases:
+    if not TenantConfig.categories and not TenantConfig.features and not TenantConfig.use_cases:
         logger.warning("No taxonomy loaded to sync.")
         return
 
     try:
         pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-        index_name = AgentConfig.get_pinecone_index()
+        index_name = TenantConfig.get_pinecone_index()
         
         if not index_name:
             logger.warning("PINECONE_INDEX_NAME not configured. Skipping taxonomy sync.")
@@ -43,7 +43,7 @@ def sync_taxonomy():
             nonlocal vectors
             if not items: return
             
-            embeddings = AgentConfig.embeddings.embed_documents(items)
+            embeddings = TenantConfig.embeddings.embed_documents(items)
             for text, emb in zip(items, embeddings):
                 safe_id = f"{tag_type}_{text}".replace(" ", "_").replace("/", "_").lower()
                 vectors.append({
@@ -52,9 +52,9 @@ def sync_taxonomy():
                     "metadata": {"type": tag_type, "name": text}
                 })
 
-        process_items(AgentConfig.collections, "category")
-        process_items(AgentConfig.features, "feature")
-        process_items(AgentConfig.use_cases, "use_case")
+        process_items(TenantConfig.categories or TenantConfig.collections, "category")
+        process_items(TenantConfig.features, "feature")
+        process_items(TenantConfig.use_cases, "use_case")
         
         if vectors:
             index.upsert(vectors=vectors, namespace=namespace)
@@ -127,7 +127,7 @@ def extract_taxonomy_parameters(query_text: str, candidate_tags: dict) -> Taxono
         return TaxonomyExtraction()
 
     try:
-        structured_llm = AgentConfig.llm.with_structured_output(TaxonomyExtraction)
+        structured_llm = TenantConfig.llm.with_structured_output(TaxonomyExtraction)
         
         prompt = (
             f"User Query: '{query_text}'\n\n"

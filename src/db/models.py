@@ -1,10 +1,10 @@
 """
-SQLAlchemy 2.0 ORM models for Inventaa GraphRAG — Denormalized Tri-Store SQLite schema.
+SQLAlchemy 2.0 ORM models for GraphRAG — Denormalized Tri-Store SQLite schema.
 
 Tables (3):
   products         — Master product catalog with denormalized CSV arrays (categories, features, use_cases)
   product_specs    — Key-value specification entries (FK -> products.sku)
-  product_variants — Purchasable variants for color/wattage combinations (FK -> products.sku)
+  product_variants — Purchasable variants for option combinations (size/color/wattage/finish) (FK -> products.sku)
 
 Storage split:
   SQL       — All referential/transactional attributes, pricing, discounts, ratings, images, specs, variants
@@ -30,18 +30,18 @@ class Base(DeclarativeBase):
 class Product(Base):
     """
     One row per product.
-    Arrays (categories, features, use_cases, color_options, wattage_options) stored as comma-separated text.
+    Arrays (categories, features, use_cases, options) stored as comma-separated text.
     Full specification key-values live in product_specs table.
     Individual SKUs/variants live in product_variants table.
     """
     __tablename__ = "products"
 
-    id: Mapped[str] = mapped_column(String, primary_key=True)                 # Internal ID (e.g. inventaa_product_123)
+    id: Mapped[str] = mapped_column(String, primary_key=True)                 # Internal ID (e.g. tenant_product_123)
     sku: Mapped[str] = mapped_column(String, unique=True, index=True)         # Primary SKU (e.g. 12M-2026B)
     name: Mapped[str] = mapped_column(String, nullable=False, index=True)     # Display Name
 
     # Pricing & Ratings (Authoritative in SQL)
-    price_num: Mapped[int] = mapped_column(Integer, default=0, index=True)    # Current sale price in INR
+    price_num: Mapped[int] = mapped_column(Integer, default=0, index=True)    # Current sale price (currency defined in tenant config)
     regular_price: Mapped[Optional[str]] = mapped_column(String)              # MRP before discount
     discount_percentage: Mapped[int] = mapped_column(Integer, default=0)      # % discount
     rating_score: Mapped[float] = mapped_column(Float, default=0.0, index=True) # Star rating (0-5)
@@ -55,15 +55,17 @@ class Product(Base):
     description: Mapped[Optional[str]] = mapped_column(Text)
     feature_descriptions: Mapped[Optional[str]] = mapped_column(Text)
     has_variants: Mapped[bool] = mapped_column(Boolean, default=False)
-    wattage: Mapped[Optional[int]] = mapped_column(Integer, index=True)
-    tenant: Mapped[str] = mapped_column(String, default="inventaa", index=True)
+    primary_option_name: Mapped[Optional[str]] = mapped_column(String)        # Universal primary option name (e.g., "Size", "Wattage")
+    primary_options: Mapped[Optional[str]] = mapped_column(Text)              # Universal primary option CSV (e.g., "Small,Medium", "12W,18W")
+    wattage: Mapped[Optional[int]] = mapped_column(Integer, index=True)       # Domain attribute (optional)
+    tenant: Mapped[str] = mapped_column(String, default="default", index=True)
 
     # Denormalized Arrays (CSV text for rapid UI filtering and display)
-    categories: Mapped[Optional[str]] = mapped_column(Text)                   # "Gate & Pillar Lights,Solar Lights"
-    features: Mapped[Optional[str]] = mapped_column(Text)                     # "waterproof,solar-powered,IP65-rated"
-    use_cases: Mapped[Optional[str]] = mapped_column(Text)                    # "gate-pillar,garden-pathway"
-    color_options: Mapped[Optional[str]] = mapped_column(Text)                # "Cool White,Warm White"
-    wattage_options: Mapped[Optional[str]] = mapped_column(Text)              # "12W,18W"
+    categories: Mapped[Optional[str]] = mapped_column(Text)                   # e.g., "Dining Tables,Wood Furniture"
+    features: Mapped[Optional[str]] = mapped_column(Text)                     # e.g., "solid-oak,extendable"
+    use_cases: Mapped[Optional[str]] = mapped_column(Text)                    # e.g., "dining-room,kitchen"
+    color_options: Mapped[Optional[str]] = mapped_column(Text)                # e.g., "Oak,Walnut"
+    wattage_options: Mapped[Optional[str]] = mapped_column(Text)              # Domain attribute (optional)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
@@ -82,15 +84,15 @@ class Product(Base):
 # ── Key-Value Specifications Table ──────────────────────────────────────────────
 
 class ProductSpec(Base):
-    """Normalized key-value specifications for each product (e.g. Wattage: 12W, IP Rating: IP65)."""
+    """Normalized key-value specifications for each product (e.g. Material: Solid Oak, IP Rating: IP65)."""
     __tablename__ = "product_specs"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     product_sku: Mapped[str] = mapped_column(
         String, ForeignKey("products.sku", ondelete="CASCADE"), index=True
     )
-    spec_key: Mapped[str] = mapped_column(String, index=True)                 # e.g. "Wattage", "IP Rating"
-    spec_value: Mapped[str] = mapped_column(Text)                             # e.g. "12W", "IP65"
+    spec_key: Mapped[str] = mapped_column(String, index=True)                 # e.g. "Material", "Dimensions", "Wattage"
+    spec_value: Mapped[str] = mapped_column(Text)                             # e.g. "Solid Oak", "180x90cm", "12W"
 
     product: Mapped["Product"] = relationship(
         "Product", back_populates="specs",
@@ -101,7 +103,7 @@ class ProductSpec(Base):
 # ── Product Variants Table ──────────────────────────────────────────────────────
 
 class ProductVariant(Base):
-    """Individual purchasable variant if a product comes in multiple wattages or colors."""
+    """Individual purchasable variant if a product comes in multiple options (size, color, finish, wattage, etc.)."""
     __tablename__ = "product_variants"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -109,8 +111,10 @@ class ProductVariant(Base):
         String, ForeignKey("products.sku", ondelete="CASCADE"), index=True
     )
     variant_sku: Mapped[Optional[str]] = mapped_column(String, index=True)    # Specific variant SKU if available
-    color_option: Mapped[Optional[str]] = mapped_column(String)               # e.g. "Cool White"
-    wattage_option: Mapped[Optional[str]] = mapped_column(String)             # e.g. "12W"
+    option_1: Mapped[Optional[str]] = mapped_column(String)                   # Universal primary option value (e.g., size or wattage)
+    option_2: Mapped[Optional[str]] = mapped_column(String)                   # Universal secondary option value (e.g., color or finish)
+    color_option: Mapped[Optional[str]] = mapped_column(String)               # Domain option attribute (optional)
+    wattage_option: Mapped[Optional[str]] = mapped_column(String)             # Domain option attribute (optional)
     price_num: Mapped[int] = mapped_column(Integer, default=0)                # Price for this specific variant
     is_available: Mapped[bool] = mapped_column(Boolean, default=True)
 

@@ -1,5 +1,5 @@
 """
-SQLite engine and session factory for Inventaa GraphRAG.
+SQLite engine and session factory for GraphRAG.
 
 Sync engine is used by the data migration and pipeline scripts.
 Async engine is used by FastAPI endpoints.
@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from functools import lru_cache
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import sessionmaker, Session
 
@@ -19,9 +19,13 @@ from src.db.models import Base
 
 
 def _db_path() -> str:
-    default_path = os.path.join(os.getcwd(), "data", "db", "inventaa_knowledge_base.db")
-    path_str = os.getenv("SQLITE_PATH", default_path)
-    path = Path(path_str)
+    if "SQLITE_PATH" in os.environ:
+        path = Path(os.environ["SQLITE_PATH"])
+    else:
+        db_dir = Path(os.getcwd()) / "data" / "db"
+        legacy_path = db_dir / "inventaa_knowledge_base.db"
+        generic_path = db_dir / "knowledge_base.db"
+        path = legacy_path if legacy_path.exists() and not generic_path.exists() else generic_path
     path.parent.mkdir(parents=True, exist_ok=True)
     return str(path)
 
@@ -31,13 +35,31 @@ def get_engine():
     url = f"sqlite:///{_db_path()}"
     engine = create_engine(url, echo=False, connect_args={"check_same_thread": False})
 
-    # Enable WAL mode and foreign keys for every SQLite connection
     @event.listens_for(engine, "connect")
     def set_sqlite_pragma(conn, _):
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
 
+    _ensure_schema_migrated(engine)
     return engine
+
+
+def _ensure_schema_migrated(engine):
+    Base.metadata.create_all(engine)
+    try:
+        with engine.begin() as conn:
+            cols = {row[1] for row in conn.execute(text("PRAGMA table_info(products)"))}
+            if "primary_option_name" not in cols:
+                conn.execute(text("ALTER TABLE products ADD COLUMN primary_option_name VARCHAR"))
+            if "primary_options" not in cols:
+                conn.execute(text("ALTER TABLE products ADD COLUMN primary_options TEXT"))
+            v_cols = {row[1] for row in conn.execute(text("PRAGMA table_info(product_variants)"))}
+            if "option_1" not in v_cols:
+                conn.execute(text("ALTER TABLE product_variants ADD COLUMN option_1 VARCHAR"))
+            if "option_2" not in v_cols:
+                conn.execute(text("ALTER TABLE product_variants ADD COLUMN option_2 VARCHAR"))
+    except Exception:
+        pass
 
 
 @lru_cache
@@ -57,5 +79,5 @@ def get_async_session() -> AsyncSession:
 
 
 def init_db():
-    """Create all tables (idempotent — safe to call on every startup)."""
-    Base.metadata.create_all(get_engine())
+    """Create all tables and auto-migrate missing columns (idempotent — safe to call on every startup)."""
+    _ensure_schema_migrated(get_engine())

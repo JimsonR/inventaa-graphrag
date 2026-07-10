@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any
 from contextlib import asynccontextmanager
 from fastmcp import FastMCP, Context
 
@@ -12,7 +12,7 @@ logger = logging.getLogger("inventaa-mcp")
 async def app_lifespan(server: FastMCP):
     """Runs ONCE when server starts to initialize Tri-Store GraphRAG dependencies."""
     logger.info("Initializing Inventaa Tri-Store GraphRAG dependencies...")
-    
+
     # Ensure environment variables are loaded
     if os.path.exists(".env"):
         with open(".env", "r") as f:
@@ -23,11 +23,11 @@ async def app_lifespan(server: FastMCP):
                 if "=" in line:
                     k, v = line.split("=", 1)
                     os.environ.setdefault(k.strip(), v.strip())
-                    
+
     from src.services.agent.config import AgentConfig
     AgentConfig.initialize()
-    logger.info("Tri-Store GraphRAG dependencies (Neo4j Lucene, SQLite, Pinecone) initialized successfully.")
-    
+    logger.info("Tri-Store GraphRAG dependencies (Neo4j Lucene, SQLite) initialized successfully.")
+
     try:
         yield {"config": AgentConfig}
     finally:
@@ -55,7 +55,7 @@ def _cors_http_app(*args, **kwargs):
 mcp.http_app = _cors_http_app
 
 # ==========================================
-# TOOLS (Functions callable by LLMs)
+# TOOLS (Functions callable by MCP clients)
 # ==========================================
 
 @mcp.tool()
@@ -67,20 +67,18 @@ async def search_catalog(
     intent_data: Optional[Dict[str, Any]] = None,
     dialogue_state: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    """Unified AI Agent endpoint for all customer queries (products, policies, advice, and conversation flow).
-    
-    This tool acts as our Tri-Store Linear GraphRAG orchestrator. It automatically:
-    1. Checks user conversation history from SQLite database when `session_id` is provided.
-    2. Classifies user intent (`find_product`, `get_product_info`, `check_policy`, `get_advice`), or uses pre-computed client `intent_data`.
-    3. Routes internally: queries Neo4j Lucene Fulltext index + Pinecone vector store for products, OR queries FAQ/policy embeddings for company operational rules (returns, warranties, shipping).
-    4. Hydrates authoritative pricing, MRP, discounts, and ratings from SQLite.
-    
+    """Lightweight catalog search endpoint using Tri-Store GraphRAG retrieval (no LLM calls).
+
+    Receives pre-classified intent from the client, runs parallel retrieval across
+    Neo4j Lucene Fulltext + SQLite FTS, fuses via Reciprocal Rank Fusion, and hydrates
+    authoritative product data from SQLite.
+
     Args:
-        query: User input query (e.g., 'give me athena lights', 'what is your return policy?', 'solar gate lights under 1500').
-        limit: Maximum number of authoritative products to return (default: 6).
-        session_id: Optional session identifier for conversational continuity and DB memory check.
-        tenant_id: Optional tenant identifier to scope search to a specific storefront or brand.
-        intent_data: Optional pre-classified intent dictionary from the client to skip internal LLM classification.
+        query: User input query (e.g., 'divine lights', 'solar gate lights under 1500').
+        limit: Maximum number of products to return (default: 6).
+        session_id: Optional session identifier (for future use).
+        tenant_id: Optional tenant identifier to scope search.
+        intent_data: Pre-classified intent dictionary from the client (required).
         dialogue_state: Optional dialogue state dictionary from the client.
     """
     try:
@@ -113,10 +111,10 @@ async def search_catalog(
 @mcp.tool()
 async def get_taxonomy_context(query: str, threshold: float = 0.80) -> Dict[str, Any]:
     """Retrieve database taxonomy candidates (categories, features, use_cases) matching a query.
-    
-    Useful for external client agents (like WhatsApp bot or UI dialog state trackers) to map user language
-    to exact database item context and valid category/feature names before formulating an intent or search.
-    
+
+    Used by external client agents (WhatsApp bot, UI) to map user language to exact
+    database category/feature names before formulating search requests.
+
     Args:
         query: User query text or keywords to resolve against the database taxonomy.
         threshold: Similarity threshold between 0.0 and 1.0 (default: 0.80).
@@ -134,11 +132,11 @@ async def get_taxonomy_context(query: str, threshold: float = 0.80) -> Dict[str,
 
 @mcp.tool()
 def get_product_details(sku: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:
-    """Get authoritative product details, pricing, discounts, ratings, and technical specs by SKU.
-    
+    """Get authoritative product details, pricing, discounts, ratings, and specs by SKU.
+
     Args:
         sku: The unique product identifier (e.g., '18C-2042', 'MAR03C', 'GAT05').
-        tenant_id: Optional tenant identifier to scope lookup to a specific storefront or brand.
+        tenant_id: Optional tenant identifier to scope lookup.
     """
     try:
         if tenant_id:
@@ -146,17 +144,17 @@ def get_product_details(sku: str, tenant_id: Optional[str] = None) -> Dict[str, 
             tenant_context.set(tenant_id)
         from src.services.agent.config import AgentConfig
         from src.db.database import Product
-        
+
         session = AgentConfig.SessionLocal()
         try:
             prod = session.query(Product).filter(Product.sku.ilike(f"%{sku}%")).first()
             if not prod:
                 return {"status": "not_found", "message": f"No product found matching SKU: {sku}"}
-                
+
             specs = []
             if prod.variants:
                 specs = [f"{v.key}: {', '.join(v.options)}" for v in prod.variants if v.options]
-                
+
             return {
                 "status": "success",
                 "sku": prod.sku,
@@ -185,7 +183,7 @@ def get_catalog_status() -> Dict[str, Any]:
     try:
         from src.services.agent.config import AgentConfig
         from src.db.database import Product
-        
+
         session = AgentConfig.SessionLocal()
         try:
             total_products = session.query(Product).count()
@@ -195,14 +193,14 @@ def get_catalog_status() -> Dict[str, Any]:
             sqlite_status = False
         finally:
             session.close()
-            
+
         lucene_indexes = []
         try:
             res = AgentConfig.graph.query("SHOW FULLTEXT INDEXES YIELD name, state RETURN name, state")
             lucene_indexes = res if res else []
         except Exception as e:
             logger.warning(f"Failed to fetch Lucene indexes: {e}")
-            
+
         return {
             "status": "healthy" if sqlite_status else "degraded",
             "sqlite_connected": sqlite_status,
@@ -217,26 +215,6 @@ def get_sku_resource(sku: str) -> Dict[str, Any]:
     """Dynamic resource exposing raw product catalog data by SKU."""
     return get_product_details(sku)
 
-# ==========================================
-# PROMPTS (Pre-configured LLM prompt templates)
-# ==========================================
-
-@mcp.prompt("recommend-lighting")
-def recommend_lighting_prompt(requirement: str = "outdoor gate lighting") -> str:
-    """Generate a sales assistant prompt to recommend lighting products based on customer needs."""
-    return f"""You are an expert sales assistant for Inventaa Lighting.
-A customer is looking for recommendations or policy assistance based on the following requirement: '{requirement}'.
-
-Please execute the following steps using available MCP tools:
-1. Call `search_catalog` with query='{requirement}'. Note that `search_catalog` is our unified conversational agent tool: it automatically checks SQLite memory history, runs intent classification (`find_product`, `check_policy`, `get_advice`), routes to the appropriate database (Neo4j Lucene, Pinecone, SQLite, or Policy FAQ vector store), and returns authoritative data and synthesized answers.
-2. Present the recommendations or policy answers clearly from the tool response, highlighting:
-   - Product Name and SKU
-   - Discounted Price vs MRP
-   - Key Features (e.g., 3-in-1 colour, waterproof, surface mount)
-   - Relevant Specifications (e.g., Wattage, Junction box compatibility)
-   - Company operational rules or warranties if applicable (e.g., 7-day replacement guarantee).
-3. Ask a friendly closing question to help them narrow down their choice (e.g., preference for warm/cool LED or solar/electric)."""
-
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Inventaa Tri-Store GraphRAG FastMCP Server")
@@ -245,11 +223,10 @@ if __name__ == "__main__":
                         help="Transport protocol to use (default: streamable-http)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="Host to bind to")
     parser.add_argument("--port", "-p", type=int, default=8008, help="Port to bind to")
-    parser.add_argument("--stateless", action="store_true", default=True, help="Run in stateless HTTP mode without session tracking (default: True)")
-
+    parser.add_argument("--stateless", action="store_true", default=True, help="Run in stateless HTTP mode (default: True)")
     parser.add_argument("--stateful", action="store_true", help="Run in stateful HTTP mode with session tracking")
     args = parser.parse_args()
-    
+
     stateless_mode = not args.stateful if args.transport in ("http", "streamable-http") else args.stateless
     logger.info(f"Starting Inventaa FastMCP server with transport='{args.transport}' (stateless={stateless_mode}) on http://{args.host}:{args.port}")
     mcp.run(transport=args.transport, host=args.host, port=args.port, stateless_http=stateless_mode)

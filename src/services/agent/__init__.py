@@ -1,7 +1,6 @@
-from src.services.agent.graph import ask_agent
-from src.services.agent.config import AgentConfig
+from src.services.agent.config import TenantConfig, AgentConfig
 
 def initialize_agent():
-    AgentConfig.initialize()
+    TenantConfig.initialize()
 
-__all__ = ["ask_agent", "initialize_agent"]
+__all__ = ["TenantConfig", "AgentConfig", "initialize_agent"]

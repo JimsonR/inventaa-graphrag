@@ -9,7 +9,18 @@ from sqlalchemy import or_, func
 from src.db.database import get_session
 from src.db.models import Product
 from src.services.agent.config import AgentConfig
-from src.query.prompts import get_stopwords
+
+
+def get_stopwords():
+    """Returns search stop words combining base English query words with dynamic config."""
+    base_stopwords = {
+        "give", "me", "show", "tell", "about", "what", "are", "the", "is", "for", "please",
+        "some", "any", "get", "find", "looking", "want", "need", "buy", "at", "in", "of",
+        "on", "to", "with", "from", "by", "an", "a", "under", "below", "above", "range", "cost", "price",
+        "can", "you", "do", "have", "we", "our"
+    }
+    config_stopwords = AgentConfig.get_stop_words()
+    return base_stopwords.union(config_stopwords)
 
 logger = logging.getLogger(__name__)
 
