@@ -99,6 +99,22 @@ def _hydrate_product_model(prod: Product) -> Dict[str, Any]:
     }
 
 
+def _expand_sqlite_categories(categories: List[str]) -> List[str]:
+    expanded = set()
+    for cat in categories:
+        if not cat:
+            continue
+        c_clean = str(cat).strip()
+        expanded.add(c_clean)
+        for k, v in AgentConfig.collection_to_sqlite_cats.items():
+            if c_clean.lower() == k.lower() or c_clean.lower() in k.lower() or k.lower() in c_clean.lower():
+                expanded.update(v)
+        for k, v in AgentConfig.category_to_sqlite_cats.items():
+            if c_clean.lower() == k.lower() or c_clean.lower() in k.lower() or k.lower() in c_clean.lower():
+                expanded.update(v)
+    return list(expanded)
+
+
 def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
     """Synchronous keyword search across SQLite catalog using structured filters and tokens."""
     try:
@@ -110,6 +126,7 @@ def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
 
         cat_filter = filters.get("category")
         all_cats = list(set([c for c in cats if c] + ([cat_filter] if cat_filter else [])))
+        expanded_cats = _expand_sqlite_categories(all_cats)
 
         raw_text = f"{query} {prod_name or ''} {' '.join(all_cats)} {' '.join(feats)} {filters.get('application') or ''} {filters.get('segment') or ''}"
         tokens = [t.lower().strip() for t in raw_text.split() if len(t) > 2 and t.lower() not in get_stopwords()]
@@ -118,9 +135,9 @@ def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
             q = session.query(Product)
             if prod_name:
                 q = q.filter(or_(Product.name.ilike(f"%{prod_name}%"), Product.sku.ilike(f"%{prod_name}%")))
-            elif all_cats:
+            elif expanded_cats:
                 cat_conds = []
-                for c in all_cats:
+                for c in expanded_cats:
                     cat_conds.append(Product.categories.ilike(f"%{c}%"))
                     cat_conds.append(Product.use_cases.ilike(f"%{c}%"))
                 if cat_conds:
@@ -140,9 +157,9 @@ def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
 
             for prod in candidates:
                 # 1. Enforce category matching if requested
-                if all_cats:
+                if expanded_cats:
                     cat_match = False
-                    for c_kw in all_cats:
+                    for c_kw in expanded_cats:
                         c_clean = c_kw.lower().strip()
                         if prod.categories and (c_clean in prod.categories.lower() or prod.categories.lower() in c_clean):
                             cat_match = True
@@ -182,10 +199,11 @@ def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
 
 def category_browse_from_sqlite(category_keywords: List[str], preferences: dict) -> List[Dict[str, Any]]:
     """Return products in a matched category for browse/listing queries."""
+    expanded_cats = _expand_sqlite_categories(category_keywords)
     with get_session() as session:
         q = session.query(Product)
         cat_conds = []
-        for kw in category_keywords:
+        for kw in expanded_cats:
             kw_lower = kw.lower().strip()
             cat_conds.append(Product.categories.ilike(f"%{kw_lower}%"))
             cat_conds.append(Product.use_cases.ilike(f"%{kw_lower}%"))

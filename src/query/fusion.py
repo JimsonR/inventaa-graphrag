@@ -95,10 +95,12 @@ def hydrate_from_sqlite(fused_skus: List[str], preferences: dict, query: str = "
 
                     # Enforce category_keywords to drop vector search outliers
                     if category_keywords:
+                        from src.query.retrieval.text_search import _expand_sqlite_categories
+                        expanded_cats = _expand_sqlite_categories(category_keywords)
                         cat_match = False
                         prod_cats = (prod.categories or "").lower()
                         prod_ucs = (prod.use_cases or "").lower()
-                        for c in category_keywords:
+                        for c in expanded_cats:
                             c_lower = c.lower().strip()
                             if c_lower in prod_cats or c_lower in prod_ucs:
                                 cat_match = True
