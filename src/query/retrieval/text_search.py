@@ -123,10 +123,6 @@ def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
                 for c in all_cats:
                     cat_conds.append(Product.categories.ilike(f"%{c}%"))
                     cat_conds.append(Product.use_cases.ilike(f"%{c}%"))
-                    for col_name, sqlite_cats in AgentConfig.collection_to_sqlite_cats.items():
-                        if c.lower() == col_name.lower() or c.lower() in col_name.lower() or col_name.lower() in c.lower():
-                            for sc in sqlite_cats:
-                                cat_conds.append(Product.categories.ilike(f"%{sc}%"))
                 if cat_conds:
                     q = q.filter(or_(*cat_conds))
             elif tokens:
@@ -152,11 +148,6 @@ def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
                             cat_match = True
                         elif prod.use_cases and c_clean in prod.use_cases.lower():
                             cat_match = True
-                        else:
-                            for col_name, sqlite_cats in AgentConfig.collection_to_sqlite_cats.items():
-                                if (c_clean == col_name.lower() or c_clean in col_name.lower() or col_name.lower() in c_clean) and prod.categories in sqlite_cats:
-                                    cat_match = True
-                                    break
                     if not cat_match:
                         continue
 
@@ -199,10 +190,6 @@ def category_browse_from_sqlite(category_keywords: List[str], preferences: dict)
             cat_conds.append(Product.categories.ilike(f"%{kw_lower}%"))
             cat_conds.append(Product.use_cases.ilike(f"%{kw_lower}%"))
             cat_conds.append(Product.name.ilike(f"%{kw_lower}%"))
-            for col_name, sqlite_cats in AgentConfig.collection_to_sqlite_cats.items():
-                if kw_lower == col_name.lower() or kw_lower in col_name.lower() or col_name.lower() in kw_lower:
-                    for sc in sqlite_cats:
-                        cat_conds.append(Product.categories.ilike(f"%{sc}%"))
 
         if cat_conds:
             q = q.filter(or_(*cat_conds))

@@ -93,6 +93,19 @@ def hydrate_from_sqlite(fused_skus: List[str], preferences: dict, query: str = "
                     if opt_mismatch:
                         continue
 
+                    # Enforce category_keywords to drop vector search outliers
+                    if category_keywords:
+                        cat_match = False
+                        prod_cats = (prod.categories or "").lower()
+                        prod_ucs = (prod.use_cases or "").lower()
+                        for c in category_keywords:
+                            c_lower = c.lower().strip()
+                            if c_lower in prod_cats or c_lower in prod_ucs:
+                                cat_match = True
+                                break
+                        if not cat_match:
+                            continue
+
                     hydrated.append(_hydrate_product_model(prod))
                 if len(hydrated) >= 10:
                     break

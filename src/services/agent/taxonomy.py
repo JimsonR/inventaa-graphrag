@@ -16,7 +16,7 @@ def sync_taxonomy():
 
     try:
         pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-        index_name = TenantConfig.get_pinecone_index()
+        index_name = os.getenv("PINECONE_INDEX_NAME")
         
         if not index_name:
             logger.warning("PINECONE_INDEX_NAME not configured. Skipping taxonomy sync.")
@@ -78,7 +78,7 @@ def _get_pinecone_index():
     global _pinecone_index
     if _pinecone_index is None:
         pc = Pinecone(api_key=os.getenv("PINECONE_API_KEY"))
-        index_name = AgentConfig.get_pinecone_index()
+        index_name = os.getenv("PINECONE_INDEX_NAME")
         if not index_name:
             raise ValueError("PINECONE_INDEX_NAME is not configured in environment or brain.")
         _pinecone_index = pc.Index(index_name)

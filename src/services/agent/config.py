@@ -140,32 +140,6 @@ class TenantConfig:
             cls.category_groups = {r['group_name']: r['collections'] for r in group_res}
             cls.top_level_groups = sorted(list(cls.category_groups.keys()))
 
-            # Dynamically map Neo4j categories/collections to SKUs and SQLite categories
-            try:
-                col_sku_res = cls.graph.query("""
-                    MATCH (c)<-[r]-(p:Product)
-                    WHERE ('Collection' IN labels(c) OR 'Category' IN labels(c) OR 'Department' IN labels(c))
-                      AND type(r) IN ['BELONGS_TO_COLLECTION', 'BELONGS_TO_CATEGORY', 'BELONGS_TO_DEPARTMENT', 'IN_CATEGORY']
-                    RETURN c.name AS collection, collect(DISTINCT toLower(p.sku)) AS skus
-                """)
-                cls.category_to_skus = {r['collection']: r['skus'] for r in col_sku_res if r.get('collection')}
-                cls.collection_to_skus = cls.category_to_skus
-
-                from src.db.database import get_session
-                from src.db.models import Product
-                from sqlalchemy import func
-                with get_session() as session:
-                    for col, skus in cls.category_to_skus.items():
-                        if not skus:
-                            continue
-                        prods = session.query(Product).filter(func.lower(Product.sku).in_(skus)).all()
-                        sqlite_cats = {p.categories for p in prods if p.categories}
-                        cls.category_to_sqlite_cats[col] = sqlite_cats
-                cls.collection_to_sqlite_cats = cls.category_to_sqlite_cats
-                logger.info(f"Dynamically mapped {len(cls.category_to_sqlite_cats)} Neo4j categories to SQLite categories via graph.")
-            except Exception as e:
-                logger.warning(f"Could not dynamically map Neo4j categories to SQLite categories: {e}")
-
             logger.info(f"Loaded schema dynamically: {len(cls.categories)} Categories/Collections, {len(cls.use_cases)} UseCases, {len(cls.features)} Features, {len(cls.category_groups)} CategoryGroups ({len(cls.top_level_groups)} top-level)")
 
             # 4. Discover Dynamic Product Options (e.g., AVAILABLE_IN_COLOR, AVAILABLE_IN_OPTION)
