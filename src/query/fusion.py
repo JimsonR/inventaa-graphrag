@@ -96,17 +96,48 @@ def hydrate_from_sqlite(fused_skus: List[str], preferences: dict, query: str = "
                     # Enforce category_keywords to drop vector search outliers
                     if category_keywords:
                         from src.query.retrieval.text_search import _expand_sqlite_categories
+                        from src.services.agent.config import AgentConfig
                         expanded_cats = _expand_sqlite_categories(category_keywords)
                         cat_match = False
+                        exact_skus_found = set()
                         prod_cats = (prod.categories or "").lower()
                         prod_ucs = (prod.use_cases or "").lower()
-                        for c in expanded_cats:
-                            c_lower = c.lower().strip()
-                            if c_lower in prod_cats or c_lower in prod_ucs:
+                        prod_sku = (prod.sku or "").upper()
+                        for kw in category_keywords:
+                            if not kw: continue
+                            kw_clean = str(kw).strip().lower()
+                            for col_name, skus in AgentConfig.collection_to_skus.items():
+                                if kw_clean == col_name.lower():
+                                    exact_skus_found.update([s.upper() for s in skus if s])
+                            for group_name, skus in AgentConfig.group_to_skus.items():
+                                g_lower = group_name.lower()
+                                if kw_clean == g_lower or kw_clean == f"{g_lower} lights" or kw_clean == f"{g_lower} collections":
+                                    exact_skus_found.update([s.upper() for s in skus if s])
+
+                        if not exact_skus_found:
+                            for kw in category_keywords:
+                                if not kw: continue
+                                kw_clean = str(kw).strip().lower()
+                                for col_name, skus in AgentConfig.collection_to_skus.items():
+                                    if kw_clean in col_name.lower() or col_name.lower() in kw_clean:
+                                        exact_skus_found.update([s.upper() for s in skus if s])
+                                for group_name, skus in AgentConfig.group_to_skus.items():
+                                    g_lower = group_name.lower()
+                                    if (len(kw_clean.split()) <= 2 and g_lower in kw_clean):
+                                        exact_skus_found.update([s.upper() for s in skus if s])
+
+                        if exact_skus_found:
+                            if prod_sku in exact_skus_found:
                                 cat_match = True
-                                break
+                        else:
+                            for c in expanded_cats:
+                                c_lower = c.lower().strip()
+                                if c_lower in prod_cats or c_lower in prod_ucs:
+                                    cat_match = True
+                                    break
                         if not cat_match:
                             continue
+
 
                     hydrated.append(_hydrate_product_model(prod))
                 if len(hydrated) >= 10:

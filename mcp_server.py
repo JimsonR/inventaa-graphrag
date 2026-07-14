@@ -120,15 +120,18 @@ async def get_taxonomy_context(query: str, threshold: float = 0.80) -> Dict[str,
         threshold: Similarity threshold between 0.0 and 1.0 (default: 0.80).
     """
     try:
-        from src.services.agent.taxonomy import fetch_taxonomy_candidates
+        from src.services.agent.taxonomy import fetch_taxonomy_candidates, fetch_taxonomy_candidates_fast
         from src.services.agent.config import AgentConfig
         import asyncio
-        query_embedding = await asyncio.to_thread(AgentConfig.embeddings.embed_query, query)
-        hints = await asyncio.to_thread(fetch_taxonomy_candidates, query_embedding, threshold)
+        hints = fetch_taxonomy_candidates_fast(query)
+        if not hints:
+            query_embedding = await asyncio.to_thread(AgentConfig.embeddings.embed_query, query)
+            hints = await asyncio.to_thread(fetch_taxonomy_candidates, query_embedding, threshold)
         return {"status": "success", "taxonomy": hints or {}}
     except Exception as e:
         logger.error(f"Error executing get_taxonomy_context: {e}", exc_info=True)
         return {"status": "failed", "error": str(e), "taxonomy": {}}
+
 
 @mcp.tool()
 def get_product_details(sku: str, tenant_id: Optional[str] = None) -> Dict[str, Any]:

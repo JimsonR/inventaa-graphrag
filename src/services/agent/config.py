@@ -25,6 +25,8 @@ class TenantConfig:
     collection_to_skus = {}
     category_to_sqlite_cats = {}
     collection_to_sqlite_cats = {}
+    group_to_skus = {}
+
 
     # YAML Configuration
     brain = {}
@@ -141,6 +143,42 @@ class TenantConfig:
             cls.top_level_groups = sorted(list(cls.category_groups.keys()))
 
             logger.info(f"Loaded schema dynamically: {len(cls.categories)} Categories/Collections, {len(cls.use_cases)} UseCases, {len(cls.features)} Features, {len(cls.category_groups)} CategoryGroups ({len(cls.top_level_groups)} top-level)")
+
+            # Load SKU mappings for Collections, Categories, and CategoryGroups
+            try:
+                col_skus_res = cls.graph.query("""
+                MATCH (p:Product)-[:BELONGS_TO_COLLECTION|HAS_PRODUCT*1..2]-(c)
+                WHERE 'Collection' IN labels(c) OR 'Category' IN labels(c) OR 'Department' IN labels(c)
+                RETURN c.name AS col_name, collect(DISTINCT p.sku) AS skus
+                """)
+                cls.collection_to_skus = {r['col_name']: [s for s in r['skus'] if s] for r in col_skus_res}
+                cls.category_to_skus = cls.collection_to_skus.copy()
+
+                group_skus_res = cls.graph.query("""
+                MATCH (cg:CategoryGroup)-[:CONTAINS]->(c)-[:BELONGS_TO_COLLECTION|HAS_PRODUCT*1..2]-(p:Product)
+                RETURN cg.name AS group_name, collect(DISTINCT p.sku) AS skus
+                """)
+                cls.group_to_skus = {r['group_name']: [s for s in r['skus'] if s] for r in group_skus_res}
+
+                # Populate SQLite category strings for each collection/category
+                from src.db.database import get_session
+                from src.db.models import Product as SqlProduct
+                with get_session() as session:
+                    for col_name, skus in cls.collection_to_skus.items():
+                        rows = session.query(SqlProduct.categories).filter(SqlProduct.sku.in_(skus)).all()
+                        cats_set = set()
+                        cats_set.add(col_name)
+                        for (r_cat,) in rows:
+                            if r_cat:
+                                for part in str(r_cat).split(","):
+                                    if part.strip(): cats_set.add(part.strip())
+                        cls.collection_to_sqlite_cats[col_name] = sorted(list(cats_set))
+                cls.category_to_sqlite_cats = cls.collection_to_sqlite_cats.copy()
+                logger.info(f"Loaded SKU & SQLite mappings for {len(cls.collection_to_skus)} collections and {len(cls.group_to_skus)} groups.")
+            except Exception as e:
+
+                logger.error(f"Failed to load collection/group SKU mappings: {e}")
+
 
             # 4. Discover Dynamic Product Options (e.g., AVAILABLE_IN_COLOR, AVAILABLE_IN_OPTION)
             try:

@@ -137,6 +137,16 @@ def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
                 q = q.filter(or_(Product.name.ilike(f"%{prod_name}%"), Product.sku.ilike(f"%{prod_name}%")))
             elif expanded_cats:
                 cat_conds = []
+                for c in all_cats:
+                    if not c: continue
+                    c_clean = str(c).strip().lower()
+                    for col_name, skus in AgentConfig.collection_to_skus.items():
+                        if c_clean == col_name.lower() or c_clean in col_name.lower() or col_name.lower() in c_clean:
+                            cat_conds.append(Product.sku.in_([s.upper() for s in skus if s]))
+                    for group_name, skus in AgentConfig.group_to_skus.items():
+                        g_lower = group_name.lower()
+                        if c_clean == g_lower or c_clean == f"{g_lower} lights" or c_clean == f"{g_lower} collections" or (len(c_clean.split()) <= 2 and g_lower in c_clean):
+                            cat_conds.append(Product.sku.in_([s.upper() for s in skus if s]))
                 for c in expanded_cats:
                     cat_conds.append(Product.categories.ilike(f"%{c}%"))
                     cat_conds.append(Product.use_cases.ilike(f"%{c}%"))
@@ -159,16 +169,41 @@ def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
                 # 1. Enforce category matching if requested
                 if expanded_cats:
                     cat_match = False
-                    for c_kw in expanded_cats:
-                        c_clean = c_kw.lower().strip()
-                        if prod.categories and (c_clean in prod.categories.lower() or prod.categories.lower() in c_clean):
+                    prod_cats = (prod.categories or "").lower()
+                    prod_ucs = (prod.use_cases or "").lower()
+                    prod_sku = (prod.sku or "").upper()
+                    for c in all_cats:
+                        if not c: continue
+                        c_clean = str(c).strip().lower()
+                        for col_name, skus in AgentConfig.collection_to_skus.items():
+                            if c_clean == col_name.lower() or c_clean in col_name.lower() or col_name.lower() in c_clean:
+                                if prod_sku in [s.upper() for s in skus if s]: cat_match = True
+                        for group_name, skus in AgentConfig.group_to_skus.items():
+                            g_lower = group_name.lower()
+                            if c_clean == g_lower or c_clean == f"{g_lower} lights" or c_clean == f"{g_lower} collections" or (len(c_clean.split()) <= 2 and g_lower in c_clean):
+                                if prod_sku in [s.upper() for s in skus if s]: cat_match = True
+                    for c in expanded_cats:
+                        c_lower = c.lower().strip()
+                        if c_lower in prod_cats or c_lower in prod_ucs:
                             cat_match = True
-                        elif prod.use_cases and c_clean in prod.use_cases.lower():
-                            cat_match = True
+                            break
                     if not cat_match:
                         continue
+                else:
+                    cat_match = True
 
-                # 2. Check numeric price bounds
+                # 2. Enforce feature/token matching
+                if tokens and not expanded_cats:
+                    token_match = False
+                    prod_text = f"{prod.name or ''} {prod.categories or ''} {prod.use_cases or ''} {prod.features or ''} {prod.sku or ''}".lower()
+                    for t in tokens:
+                        if t in prod_text:
+                            token_match = True
+                            break
+                    if not token_match:
+                        continue
+
+                # 3. Check numeric price bounds
                 max_p = preferences.get("max_price")
                 if max_p and isinstance(max_p, (int, float)) and prod.price_num > max_p:
                     continue
@@ -176,7 +211,7 @@ def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
                 if min_p and isinstance(min_p, (int, float)) and prod.price_num < min_p:
                     continue
 
-                # 3. Check dynamic attribute/option preferences (e.g. color, wattage, size, material)
+                # 4. Check dynamic attribute/option preferences (e.g. color, wattage, size, material)
                 opt_mismatch = False
                 for pref_k, pref_v in preferences.items():
                     if pref_k in ("min_price", "max_price", "price", "sort_by", "limit"):
@@ -200,17 +235,49 @@ def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
 def category_browse_from_sqlite(category_keywords: List[str], preferences: dict) -> List[Dict[str, Any]]:
     """Return products in a matched category for browse/listing queries."""
     expanded_cats = _expand_sqlite_categories(category_keywords)
+    target_skus = set()
+    exact_collection_matched = False
+    for kw in category_keywords:
+        if not kw: continue
+        kw_clean = str(kw).strip().lower()
+        for col_name, skus in AgentConfig.collection_to_skus.items():
+            if kw_clean == col_name.lower():
+                target_skus.update([s.upper() for s in skus if s])
+                exact_collection_matched = True
+        for group_name, skus in AgentConfig.group_to_skus.items():
+            g_lower = group_name.lower()
+            if kw_clean == g_lower or kw_clean == f"{g_lower} lights" or kw_clean == f"{g_lower} collections":
+                target_skus.update([s.upper() for s in skus if s])
+                exact_collection_matched = True
+
+    if not exact_collection_matched:
+        for kw in category_keywords:
+            if not kw: continue
+            kw_clean = str(kw).strip().lower()
+            for col_name, skus in AgentConfig.collection_to_skus.items():
+                if kw_clean in col_name.lower() or col_name.lower() in kw_clean:
+                    target_skus.update([s.upper() for s in skus if s])
+            for group_name, skus in AgentConfig.group_to_skus.items():
+                g_lower = group_name.lower()
+                if (len(kw_clean.split()) <= 2 and g_lower in kw_clean):
+                    target_skus.update([s.upper() for s in skus if s])
+
     with get_session() as session:
         q = session.query(Product)
-        cat_conds = []
-        for kw in expanded_cats:
-            kw_lower = kw.lower().strip()
-            cat_conds.append(Product.categories.ilike(f"%{kw_lower}%"))
-            cat_conds.append(Product.use_cases.ilike(f"%{kw_lower}%"))
-            cat_conds.append(Product.name.ilike(f"%{kw_lower}%"))
+        if exact_collection_matched and target_skus:
+            q = q.filter(Product.sku.in_(list(target_skus)))
+        else:
+            cat_conds = []
+            if target_skus:
+                cat_conds.append(Product.sku.in_(list(target_skus)))
+            for kw in expanded_cats:
+                kw_lower = kw.lower().strip()
+                cat_conds.append(Product.categories.ilike(f"%{kw_lower}%"))
+                cat_conds.append(Product.use_cases.ilike(f"%{kw_lower}%"))
+                cat_conds.append(Product.name.ilike(f"%{kw_lower}%"))
 
-        if cat_conds:
-            q = q.filter(or_(*cat_conds))
+            if cat_conds:
+                q = q.filter(or_(*cat_conds))
 
         max_p = preferences.get("max_price")
         if max_p and isinstance(max_p, (int, float)):
@@ -221,3 +288,5 @@ def category_browse_from_sqlite(category_keywords: List[str], preferences: dict)
 
         products = q.order_by(Product.rating_score.desc()).all()
         return [_hydrate_product_model(p) for p in products]
+
+

@@ -114,3 +114,43 @@ def fetch_taxonomy_candidates(query_embedding: list, threshold: float = 0.80) ->
     except Exception as e:
         logger.error(f"[Taxonomy] Error fetching taxonomy candidates: {e}")
         return {}
+
+
+def fetch_taxonomy_candidates_fast(query: str) -> dict:
+    """Instant in-memory taxonomy match without network calls to Pinecone or Azure OpenAI."""
+    if not query or len(query.strip()) < 2:
+        return {}
+    q_lower = query.lower().strip()
+    q_tokens = set([t for t in q_lower.split() if len(t) > 2])
+    matched_tags = {}
+
+    from src.services.agent.config import AgentConfig
+    # Check collections/categories
+    for cat in (AgentConfig.categories or []):
+        c_lower = str(cat).lower().strip()
+        if c_lower in q_lower or q_lower in c_lower:
+            matched_tags.setdefault("category", []).append(str(cat))
+            if len(matched_tags["category"]) >= 6: break
+    # Check category groups
+    for g_name in (AgentConfig.category_groups.keys() if AgentConfig.category_groups else []):
+        g_lower = str(g_name).lower().strip()
+        if g_lower in q_lower or q_lower == f"{g_lower} lights" or q_lower == f"{g_lower} collections":
+            matched_tags.setdefault("category", []).append(str(g_name))
+            if len(matched_tags["category"]) >= 6: break
+    # Check features
+    for feat in (AgentConfig.features or []):
+        f_lower = str(feat).lower().strip()
+        if len(f_lower) > 2 and (f_lower in q_lower or any(t == f_lower for t in q_tokens)):
+            matched_tags.setdefault("feature", []).append(str(feat))
+            if len(matched_tags.get("feature", [])) >= 5: break
+    # Check use cases
+    for uc in (AgentConfig.use_cases or []):
+        uc_lower = str(uc).lower().strip()
+        if len(uc_lower) > 2 and (uc_lower in q_lower or any(t in uc_lower for t in q_tokens)):
+            matched_tags.setdefault("use_case", []).append(str(uc))
+            if len(matched_tags.get("use_case", [])) >= 5: break
+
+    if matched_tags:
+        logger.info(f"[Taxonomy-Fast] Instant matched candidate tags: {matched_tags}")
+    return matched_tags
+
