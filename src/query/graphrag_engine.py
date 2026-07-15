@@ -15,7 +15,7 @@ from src.services.agent.config import AgentConfig
 from src.query.models import QueryIntent, QueryResult
 from src.query.retrieval import parallel_retrieve, category_browse_from_sqlite
 from src.query.fusion import fuse_results, hydrate_from_sqlite, build_context
-from src.utils.timing import log_timing
+from src.utils.timing import log_timing, async_time_it
 
 logger = logging.getLogger(__name__)
 
@@ -176,21 +176,25 @@ class GraphRAGEngine:
             return QueryResult(intent=intent, products=[], context_text="", response="No products found in this category.", product_links=[])
 
         # ── Parallel retrieval (Vector + Graph + Text/SQL) ──
-        vector_results, graph_results, text_results = await self.retrieve(user_query, intent_data)
+        async with async_time_it("retrieve.parallel"):
+            vector_results, graph_results, text_results = await self.retrieve(user_query, intent_data)
         logger.info(f"Retrieved: {len(vector_results)} vector, {len(graph_results)} graph, {len(text_results)} text")
 
         # ── Reciprocal Rank Fusion ──
-        fused_skus, non_prod_contexts = fuse_results(vector_results, graph_results, text_results)
+        async with async_time_it("fusion.fuse_results"):
+            fused_skus, non_prod_contexts = fuse_results(vector_results, graph_results, text_results)
 
         # ── SQLite Hydration ──
-        hydrated_products = hydrate_from_sqlite(
-            fused_skus, intent_data.get("preferences", {}),
-            query=user_query, category_keywords=intent_data.get("category_keywords"),
-        )
+        async with async_time_it("fusion.hydrate_from_sqlite"):
+            hydrated_products = hydrate_from_sqlite(
+                fused_skus, intent_data.get("preferences", {}),
+                query=user_query, category_keywords=intent_data.get("category_keywords"),
+            )
         logger.info(f"Hydrated {len(hydrated_products)} authoritative product cards from SQLite")
 
         # ── Build context and product links ──
-        context_text = build_context(hydrated_products, non_prod_contexts)
+        async with async_time_it("fusion.build_context"):
+            context_text = build_context(hydrated_products, non_prod_contexts)
         product_links = [
             {"sku": p["sku"], "name": p["name"], "url": p["url"], "price": p["price_num"], "image_url": p["image_url"]}
             for p in hydrated_products if p.get("url")

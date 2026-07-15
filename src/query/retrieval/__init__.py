@@ -4,6 +4,7 @@ retrieval/__init__.py — Re-exports retrieval methods for the GraphRAGEngine.
 
 import asyncio
 import logging
+import time
 from typing import Tuple, List, Dict, Any
 from src.query.retrieval.graph_search import graph_search
 from src.query.retrieval.vector_search import vector_search
@@ -16,22 +17,31 @@ async def parallel_retrieve(query: str, intent_data: dict) -> Tuple[List[Dict[st
     """
     Executes Vector, Graph, and Text/SQL keyword searches in parallel.
     """
-    vector_task = asyncio.to_thread(vector_search, intent_data, query)
-    graph_task = asyncio.to_thread(graph_search, intent_data, query)
-    text_task = asyncio.to_thread(text_search, intent_data, query)
+    async def _timed_channel(name: str, fn, *args):
+        t0 = time.perf_counter()
+        try:
+            result = await asyncio.to_thread(fn, *args)
+            elapsed = time.perf_counter() - t0
+            print(f"[TIMING] channel.{name}: {elapsed:.3f}s ({len(result) if isinstance(result, list) else 0} results)")
+            return result
+        except Exception as e:
+            elapsed = time.perf_counter() - t0
+            print(f"[TIMING] channel.{name}: {elapsed:.3f}s (FAILED: {e})")
+            return []
+
+    vector_task = _timed_channel("vector", vector_search, intent_data, query)
+    graph_task = _timed_channel("graph", graph_search, intent_data, query)
+    text_task = _timed_channel("text", text_search, intent_data, query)
 
     vector_results, graph_results, text_results = await asyncio.gather(
         vector_task, graph_task, text_task, return_exceptions=True
     )
 
     if isinstance(vector_results, Exception):
-        logger.error(f"Parallel vector search failed: {vector_results}")
         vector_results = []
     if isinstance(graph_results, Exception):
-        logger.error(f"Parallel graph search failed: {graph_results}")
         graph_results = []
     if isinstance(text_results, Exception):
-        logger.error(f"Parallel text search failed: {text_results}")
         text_results = []
 
     return vector_results, graph_results, text_results
