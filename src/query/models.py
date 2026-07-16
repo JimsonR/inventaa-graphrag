@@ -13,6 +13,7 @@ class QueryIntent(str, Enum):
     GET_PRODUCT_INFO = "get_product_info"
     BROWSE_CATEGORY = "browse_category"
     CHECK_POLICY = "check_policy"
+    FAQ_KNOWLEDGE = "faq_knowledge"
     GET_ADVICE = "get_advice"
     UNKNOWN = "unknown"
 

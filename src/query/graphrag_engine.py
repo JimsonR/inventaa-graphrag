@@ -95,7 +95,9 @@ class GraphRAGEngine:
             intent = QueryIntent(intent_data.get("intent", "unknown"))
         except ValueError:
             intent_str = str(intent_data.get("intent", "unknown")).lower()
-            if "faq" in intent_str or "knowledge" in intent_str or "policy" in intent_str:
+            if any(w in intent_str for w in ["faq", "knowledge", "blog", "idea"]):
+                intent = QueryIntent.FAQ_KNOWLEDGE
+            elif any(w in intent_str for w in ["policy", "warranty", "exchange", "return"]):
                 intent = QueryIntent.CHECK_POLICY
             elif "browse" in intent_str or "category" in intent_str:
                 intent = QueryIntent.BROWSE_CATEGORY
@@ -200,11 +202,19 @@ class GraphRAGEngine:
             for p in hydrated_products if p.get("url")
         ]
 
+        resp_parts = []
+        if hydrated_products:
+            resp_parts.append(f"Found {len(hydrated_products)} matching products.")
+        if non_prod_contexts:
+            resp_parts.append(f"Retrieved {len(non_prod_contexts)} knowledge/policy entries.")
+        if not resp_parts:
+            resp_parts.append("No matching products or knowledge entries found.")
+
         return QueryResult(
             intent=intent,
             products=hydrated_products,
             context_text=context_text,
-            response=f"Found {len(hydrated_products)} matching products." if hydrated_products else "No matching products found.",
+            response=" ".join(resp_parts),
             product_links=product_links,
         )
 

@@ -1,118 +1,102 @@
 import logging
-import os
-from pinecone import Pinecone
 from src.services.agent.config import TenantConfig, AgentConfig
 
 logger = logging.getLogger(__name__)
 
-# ── Module-level Pinecone singleton ──
-# Warm-connected during sync_taxonomy() at server boot so that
-# fetch_taxonomy_candidates() never pays the cold-start handshake.
-_pinecone_client = None
-_pinecone_index = None
 
-
-def _ensure_pinecone():
-    """Initialise the Pinecone client + index exactly once per process."""
-    global _pinecone_client, _pinecone_index
-    if _pinecone_index is not None:
-        return _pinecone_index
-
-    api_key = os.getenv("PINECONE_API_KEY")
-    index_name = os.getenv("PINECONE_INDEX_NAME")
-    if not api_key or not index_name:
-        raise ValueError("PINECONE_API_KEY and PINECONE_INDEX_NAME must be configured.")
-
-    _pinecone_client = Pinecone(api_key=api_key)
-    _pinecone_index = _pinecone_client.Index(index_name)
-    logger.info(f"[Pinecone] Connected to index '{index_name}'")
-    return _pinecone_index
+def _ensure_neo4j_vector_index():
+    """Ensure the Neo4j vector index for TaxonomyTag exists."""
+    if not TenantConfig.graph:
+        return False
+    try:
+        TenantConfig.graph.query("""
+        CREATE VECTOR INDEX taxonomy_vector_index IF NOT EXISTS
+        FOR (t:TaxonomyTag) ON (t.embedding)
+        OPTIONS {indexConfig: {
+          `vector.dimensions`: 1536,
+          `vector.similarity_function`: 'cosine'
+        }}
+        """)
+        return True
+    except Exception as e:
+        logger.warning(f"[Neo4j-Taxonomy] Could not verify/create vector index: {e}")
+        return False
 
 
 def sync_taxonomy():
     """
-    Embeds categories/collections, features, and use_cases and upserts them to Pinecone.
-    Uses the 'taxonomy-cache' namespace.
-    Also warm-connects the Pinecone index for future query calls.
+    Embeds categories/collections, features, and use_cases and upserts them to Neo4j as (:TaxonomyTag) nodes.
+    Uses Neo4j native vector indexing ('taxonomy_vector_index').
     """
-    if not TenantConfig.categories and not TenantConfig.features and not TenantConfig.use_cases:
-        # Still warm-connect even if no taxonomy to sync
-        try:
-            _ensure_pinecone()
-        except Exception as e:
-            logger.warning(f"Could not warm-connect Pinecone: {e}")
+    if not TenantConfig.graph or not TenantConfig.embeddings:
         return
 
     try:
-        index = _ensure_pinecone()
-        namespace = "taxonomy-cache"
+        _ensure_neo4j_vector_index()
 
-        # Check if namespace already has data to avoid re-embedding on every boot
-        stats = index.describe_index_stats()
-        if namespace in stats.namespaces and stats.namespaces[namespace].vector_count > 0:
-            logger.info(f"Taxonomy already synced ({stats.namespaces[namespace].vector_count} vectors). Skipping.")
+        # Check if we already have TaxonomyTag nodes synced
+        res = TenantConfig.graph.query("MATCH (t:TaxonomyTag) WHERE t.embedding IS NOT NULL RETURN count(t) AS count")
+        count = res[0]["count"] if res else 0
+        if count > 0:
+            logger.info(f"Taxonomy already synced to Neo4j ({count} TaxonomyTag nodes). Skipping.")
             return
 
-        logger.info("Syncing taxonomy to Pinecone 'taxonomy-cache' namespace...")
-
-        vectors = []
+        logger.info("Syncing taxonomy to Neo4j (:TaxonomyTag) nodes and vector index...")
 
         def process_items(items, tag_type):
-            nonlocal vectors
             if not items:
                 return
-
             embeddings = TenantConfig.embeddings.embed_documents(items)
             for text, emb in zip(items, embeddings):
                 safe_id = f"{tag_type}_{text}".replace(" ", "_").replace("/", "_").lower()
-                vectors.append({
-                    "id": safe_id,
-                    "values": emb,
-                    "metadata": {"type": tag_type, "name": text}
-                })
+                TenantConfig.graph.query("""
+                MERGE (t:TaxonomyTag {id: $safe_id})
+                SET t.name = $name,
+                    t.type = $tag_type,
+                    t.embedding = $embedding
+                """, params={"safe_id": safe_id, "name": text, "tag_type": tag_type, "embedding": emb})
 
         process_items(TenantConfig.categories or TenantConfig.collections, "category")
         process_items(TenantConfig.features, "feature")
         process_items(TenantConfig.use_cases, "use_case")
 
-        if vectors:
-            index.upsert(vectors=vectors, namespace=namespace)
-            logger.info(f"Successfully upserted {len(vectors)} taxonomy tags.")
+        logger.info("Successfully upserted taxonomy tags to Neo4j.")
     except Exception as e:
-        logger.error(f"Failed to sync taxonomy: {e}", exc_info=True)
+        logger.error(f"Failed to sync taxonomy to Neo4j: {e}", exc_info=True)
 
 
 def fetch_taxonomy_candidates(query_embedding: list, threshold: float = 0.80) -> dict:
     """
-    Queries the taxonomy-cache and returns matched tags grouped by type.
+    Queries Neo4j vector index ('taxonomy_vector_index') and returns matched tags grouped by type.
     Example return: {'feature': ['waterproof'], 'use_case': ['gate-pillar', 'garden-pathway']}
     """
-    try:
-        index = _ensure_pinecone()
+    if not TenantConfig.graph or not query_embedding:
+        return {}
 
-        res = index.query(
-            namespace="taxonomy-cache",
-            vector=query_embedding,
-            top_k=7,
-            include_metadata=True
-        )
+    try:
+        _ensure_neo4j_vector_index()
+
+        res = TenantConfig.graph.query("""
+        CALL db.index.vector.queryNodes('taxonomy_vector_index', 7, $embedding)
+        YIELD node, score
+        WHERE score >= $threshold
+        RETURN node.type AS type, node.name AS name, score
+        """, params={"embedding": query_embedding, "threshold": threshold})
 
         matched_tags = {}
-        for match in res.matches:
-            if match.score >= threshold:
-                tag_type = match.metadata.get("type")
-                tag_name = match.metadata.get("name")
-                if tag_type and tag_name:
-                    if tag_type not in matched_tags:
-                        matched_tags[tag_type] = []
-                    if tag_name not in matched_tags[tag_type] and len(matched_tags[tag_type]) < 10:
-                        matched_tags[tag_type].append(tag_name)
+        for match in (res or []):
+            tag_type = match.get("type")
+            tag_name = match.get("name")
+            if tag_type and tag_name:
+                matched_tags.setdefault(tag_type, [])
+                if tag_name not in matched_tags[tag_type] and len(matched_tags[tag_type]) < 10:
+                    matched_tags[tag_type].append(tag_name)
 
         if matched_tags:
-            logger.info(f"[Taxonomy] Fetched candidate tags: {matched_tags} (threshold={threshold})")
+            logger.info(f"[Taxonomy-Neo4j] Fetched candidate tags: {matched_tags} (threshold={threshold})")
         return matched_tags
     except Exception as e:
-        logger.error(f"[Taxonomy] Error fetching taxonomy candidates: {e}")
+        logger.error(f"[Taxonomy-Neo4j] Error fetching taxonomy candidates: {e}")
         return {}
 
 

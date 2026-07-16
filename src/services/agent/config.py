@@ -66,12 +66,15 @@ class TenantConfig:
             return
 
         import yaml
-        config_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "agent_config.yaml")
+        config_dir = os.path.join(os.path.dirname(__file__), "..", "..", "config")
+        config_path = os.path.join(config_dir, "base_config.yaml")
+        if not os.path.exists(config_path):
+            config_path = os.path.join(config_dir, "agent_config.yaml")
         try:
             with open(config_path, "r", encoding="utf-8") as f:
                 cls.brain = yaml.safe_load(f) or {}
         except Exception as e:
-            logger.error(f"Failed to load agent_config.yaml at {config_path}: {e}")
+            logger.error(f"Failed to load configuration at {config_path}: {e}")
             cls.brain = {}
 
         domain = os.getenv("DOMAIN") or cls.brain.get("tenant", {}).get("domain") or cls.brain.get("domain", "ecommerce")
