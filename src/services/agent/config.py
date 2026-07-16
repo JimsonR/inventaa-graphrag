@@ -111,6 +111,11 @@ class TenantConfig:
         # 2. Connect to Neo4j Graph (disable schema refresh for fast cold start)
         cls.graph = Neo4jGraph(url=NEO4J_URI, username=NEO4J_USERNAME, password=NEO4J_PASSWORD, refresh_schema=False)
 
+        # 2b. Initialize SQLite session factory
+        from src.db.database import get_engine
+        from sqlalchemy.orm import sessionmaker
+        cls.SessionLocal = sessionmaker(bind=get_engine(), expire_on_commit=False)
+
         cls._initialized = True
 
         # 3. Fetch dynamic graph schema (domain agnostic: categories/departments/collections)

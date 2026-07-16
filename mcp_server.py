@@ -146,28 +146,50 @@ def get_product_details(sku: str, tenant_id: Optional[str] = None) -> Dict[str, 
             from src.services.agent.context import tenant_context
             tenant_context.set(tenant_id)
         from src.services.agent.config import AgentConfig
-        from src.db.database import Product
+        from src.db.models import Product
 
-        session = AgentConfig.SessionLocal()
+        if AgentConfig.SessionLocal is None:
+            AgentConfig.initialize()
+        if AgentConfig.SessionLocal:
+            session = AgentConfig.SessionLocal()
+        else:
+            from src.db.database import get_session
+            session = get_session()
         try:
             prod = session.query(Product).filter(Product.sku.ilike(f"%{sku}%")).first()
             if not prod:
                 return {"status": "not_found", "message": f"No product found matching SKU: {sku}"}
 
             specs = []
-            if prod.variants:
-                specs = [f"{v.key}: {', '.join(v.options)}" for v in prod.variants if v.options]
+            if prod.specs:
+                specs = [f"{s.spec_key}: {s.spec_value}" for s in prod.specs if s.spec_key and s.spec_value]
+            elif prod.variants:
+                specs = [f"Variant {v.variant_sku or v.id}: {v.option_1 or ''} {v.option_2 or ''}".strip() for v in prod.variants]
+
+            price_num = prod.price_num or 0
+            mrp_str = prod.regular_price
+            discount_str = f"{prod.discount_percentage}% off" if prod.discount_percentage else None
+            if not discount_str and mrp_str and mrp_str.replace(",", "").replace(".", "").isdigit():
+                try:
+                    mrp_num = float(mrp_str.replace(",", ""))
+                    if mrp_num > price_num and price_num > 0:
+                        discount_str = f"{int((1 - price_num / mrp_num) * 100)}% off"
+                except Exception:
+                    pass
+
+            categories_list = [c.strip() for c in prod.categories.split(",") if c.strip()] if prod.categories else []
+            features_list = [f.strip() for f in prod.features.split(",") if f.strip()] if prod.features else []
 
             return {
                 "status": "success",
                 "sku": prod.sku,
                 "name": prod.name,
-                "price": f"Rs. {prod.price}",
-                "mrp": f"Rs. {prod.mrp}" if prod.mrp else None,
-                "discount": f"{int((1 - prod.price/prod.mrp)*100)}% off" if prod.mrp and prod.mrp > prod.price else None,
-                "rating": f"{prod.rating} stars ({prod.reviews_count} reviews)",
-                "categories": [c.name for c in prod.categories] if prod.categories else [],
-                "features": [f.name for f in prod.features] if prod.features else [],
+                "price": f"Rs. {price_num:,.0f}" if price_num else "Price on request",
+                "mrp": f"Rs. {mrp_str}" if mrp_str else None,
+                "discount": discount_str,
+                "rating": f"{prod.rating_score} stars ({prod.review_count} reviews)",
+                "categories": categories_list,
+                "features": features_list,
                 "specifications": specs
             }
         finally:
@@ -185,9 +207,15 @@ def get_catalog_status() -> Dict[str, Any]:
     """Get catalog statistics, database connectivity status, and Lucene index health."""
     try:
         from src.services.agent.config import AgentConfig
-        from src.db.database import Product
+        from src.db.models import Product
 
-        session = AgentConfig.SessionLocal()
+        if AgentConfig.SessionLocal is None:
+            AgentConfig.initialize()
+        if AgentConfig.SessionLocal:
+            session = AgentConfig.SessionLocal()
+        else:
+            from src.db.database import get_session
+            session = get_session()
         try:
             total_products = session.query(Product).count()
             sqlite_status = True
