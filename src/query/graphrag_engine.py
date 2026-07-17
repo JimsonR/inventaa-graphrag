@@ -105,6 +105,33 @@ class GraphRAGEngine:
         logger.info(f"Classified Intent: {intent} | Keywords: {intent_data.get('category_keywords')} {intent_data.get('feature_keywords')}")
 
         # ── Detect broad / top-level navigation ──
+        query_lower = user_query.strip().lower()
+        # Domain-agnostic item noun (e.g. 'light', 'furniture', 'item') so
+        # navigation matching works across verticals, not just lighting.
+        noun = AgentConfig.get_item_noun().lower()
+        plural = noun if noun.endswith("s") else f"{noun}s"
+        # Generic browse nouns that signal "show me your catalog/menu" rather than
+        # a specific product search, even though they are not stopwords.
+        nav_generic = {
+            "collection", "collections", "catalog", "catalogue", "products",
+            "product", "range", "menu", "categories", "category", "offers",
+            "offer", "deals", "deal", "shop", "store", "items", "item",
+            "your", "my", "our", "their",
+        }
+        # A query still carries a *specific* search term (e.g. a product name like
+        # "athena") when, after removing stopwords, the generic item noun, and
+        # generic browse nouns, at least one meaningful token remains. Such
+        # queries are real product searches and must NOT be swallowed by broad
+        # navigation.
+        try:
+            from src.query.retrieval.text_search import get_stopwords
+            _stop = get_stopwords()
+        except Exception:
+            _stop = set()
+        searchable_tokens = [
+            t for t in query_lower.split()
+            if len(t) > 2 and t not in _stop and t != noun and t != plural and t not in nav_generic
+        ]
         is_broad_query = (
             intent in (QueryIntent.FIND_PRODUCT, QueryIntent.BROWSE_CATEGORY, QueryIntent.UNKNOWN)
             and not cat_kws
@@ -112,16 +139,16 @@ class GraphRAGEngine:
             and not intent_data.get("product_name")
             and not filters.get("category")
             and not filters.get("brand")
+            and not searchable_tokens
         )
 
         if intent == QueryIntent.BROWSE_CATEGORY or is_broad_query:
             top_groups = [g.lower() for g in AgentConfig.top_level_groups]
-            query_lower = user_query.strip().lower()
             is_top_level = not filters.get("category") and (
                 any(
-                    query_lower == g or query_lower == f"{g} lights" or query_lower == f"{g} lighting"
-                    or query_lower == f"show {g}" or query_lower == f"show {g} lights"
-                    or f"{g} lights" in query_lower
+                    query_lower == g or query_lower == f"{g} {plural}" or query_lower == f"{g} {noun}"
+                    or query_lower == f"show {g}" or query_lower == f"show {g} {plural}"
+                    or f"{g} {plural}" in query_lower
                     for g in top_groups
                 )
                 or (
@@ -133,7 +160,11 @@ class GraphRAGEngine:
             if is_top_level or (is_broad_query and not filters.get("category")):
                 logger.info(f"Detected TOP-LEVEL / BROAD category navigation for query='{user_query}'")
                 app = str(filters.get("application") or "").lower()
-                friendly_lines = ["Hello! We have a variety of specialized lighting collections available. Which category would you like to explore?"]
+                greeting = AgentConfig.brain.get("prompts", {}).get(
+                    "browse_greeting",
+                    "Hello! We have a variety of collections available. Which category would you like to explore?",
+                )
+                friendly_lines = [greeting]
                 matched_groups = [
                     g for g in AgentConfig.top_level_groups
                     if g.lower() in query_lower or g.lower() in app or any(g.lower() in k.lower() for k in cat_kws)

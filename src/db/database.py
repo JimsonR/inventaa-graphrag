@@ -19,20 +19,51 @@ from src.db.models import Base, Product, ProductSpec, ProductVariant
 
 
 def _db_path() -> str:
+    # Explicit override always wins.
     if "SQLITE_PATH" in os.environ:
         path = Path(os.environ["SQLITE_PATH"])
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return str(path)
+
+    db_dir = Path(os.getcwd()) / "data" / "db"
+
+    # Resolve the active tenant (request context > env > config) to pick a
+    # tenant-scoped DB file. Kept import-local so this module stays lightweight
+    # and free of hard config/context dependencies.
+    tenant_id = None
+    try:
+        from src.services.agent.context import tenant_context
+        tenant_id = tenant_context.get()
+    except Exception:
+        tenant_id = None
+    tenant_id = tenant_id or os.getenv("TENANT_ID")
+
+    candidates = []
+    if tenant_id:
+        candidates.append(db_dir / f"{tenant_id}_knowledge_base.db")
+    candidates.append(db_dir / "knowledge_base.db")
+    # Legacy single-tenant fallback — ONLY when no tenant is set or it is the
+    # original 'inventaa' tenant. Never fall back to another tenant's DB file
+    # (that would be a cross-tenant data leak).
+    if not tenant_id or tenant_id == "inventaa":
+        candidates.append(db_dir / "inventaa_knowledge_base.db")
+
+    # Use the first candidate that already exists; otherwise create the most
+    # specific one (tenant-scoped if known, else generic).
+    for c in candidates:
+        if c.exists():
+            path = c
+            break
     else:
-        db_dir = Path(os.getcwd()) / "data" / "db"
-        legacy_path = db_dir / "inventaa_knowledge_base.db"
-        generic_path = db_dir / "knowledge_base.db"
-        path = legacy_path if legacy_path.exists() and not generic_path.exists() else generic_path
+        path = candidates[0]
+
     path.parent.mkdir(parents=True, exist_ok=True)
     return str(path)
 
 
 @lru_cache
-def get_engine():
-    url = f"sqlite:///{_db_path()}"
+def _engine_for(path: str):
+    url = f"sqlite:///{path}"
     engine = create_engine(url, echo=False, connect_args={"check_same_thread": False})
 
     @event.listens_for(engine, "connect")
@@ -42,6 +73,13 @@ def get_engine():
 
     _ensure_schema_migrated(engine)
     return engine
+
+
+def get_engine():
+    # Resolve the tenant-scoped path per call, but reuse a cached engine per path
+    # so multi-tenant switching creates/reuses the correct DB (not a single
+    # first-seen engine).
+    return _engine_for(_db_path())
 
 
 def _ensure_schema_migrated(engine):
@@ -63,9 +101,13 @@ def _ensure_schema_migrated(engine):
 
 
 @lru_cache
-def get_async_engine():
-    url = f"sqlite+aiosqlite:///{_db_path()}"
+def _async_engine_for(path: str):
+    url = f"sqlite+aiosqlite:///{path}"
     return create_async_engine(url, echo=False)
+
+
+def get_async_engine():
+    return _async_engine_for(_db_path())
 
 
 def get_session() -> Session:

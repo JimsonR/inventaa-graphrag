@@ -3,6 +3,9 @@ tenant:
   name: "Inventaa"
   domain: "ecommerce"
   description: "an Indian LED lighting brand"
+  # Generic noun for a catalog item in this vertical (light / furniture / dish / item).
+  # Used to build domain-agnostic navigation matching, not hardcoded 'lights'.
+  item_noun: "light"
   aliases: 
     - "tenant_swadhya_foods_001"
     - "tenant_inventaa_led_001"
@@ -10,11 +13,14 @@ tenant:
 
 neo4j:
   fulltext_index: "product_name_ft"
+  # Optional: if omitted, resolves to '{tenant_id}_faq_vector' at runtime.
   faq_index: "inventaa_faq_vector"
 
 prompts:
   fallback_error_message: "I'm sorry, I'm only able to assist with LED lighting products and related queries from Inventaa."
   broad_query_fallback: "For example, are you looking for Indoor, Outdoor, or Solar lights?"
+  # Greeting shown for broad/top-level category navigation (domain-agnostic default lives in code).
+  browse_greeting: "Hello! We have a variety of specialized lighting collections available. Which category would you like to explore?"
   
   router_system: >
     You are an intent classification router for {brand_name}, {brand_description}.

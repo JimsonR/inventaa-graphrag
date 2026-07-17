@@ -3,6 +3,7 @@ import logging
 from typing import Optional, List, Dict, Any, Set
 from langchain_neo4j import Neo4jGraph
 from langchain_openai import AzureOpenAIEmbeddings
+from src.services.agent.context import tenant_context
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +59,21 @@ class TenantConfig:
 
     @classmethod
     def get_faq_index(cls) -> str:
-        return os.getenv("NEO4J_FAQ_INDEX", cls.brain.get("neo4j", {}).get("faq_index", "faq_vector"))
+        # Env override > explicit config > tenant-derived ('{tenant_id}_faq_vector').
+        env = os.getenv("NEO4J_FAQ_INDEX")
+        if env:
+            return env
+        cfg = cls.brain.get("neo4j", {}).get("faq_index")
+        if cfg:
+            return cfg
+        tid = tenant_context.get() or cls.brain.get("tenant", {}).get("id", "default")
+        return f"{tid}_faq_vector"
+
+    @classmethod
+    def get_item_noun(cls) -> str:
+        """Generic item noun for this tenant (e.g. 'light' / 'furniture' / 'item').
+        Used to build domain-agnostic navigation copy instead of hardcoded 'lights'/'lighting'."""
+        return cls.brain.get("tenant", {}).get("item_noun", "item")
 
     @classmethod
     def initialize(cls):
