@@ -3,7 +3,7 @@ models.py — Data structures and enums for the RAG engine.
 """
 
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Dict, Any
 
 
@@ -12,7 +12,6 @@ class QueryIntent(str, Enum):
     FIND_PRODUCT = "find_product"
     GET_PRODUCT_INFO = "get_product_info"
     BROWSE_CATEGORY = "browse_category"
-    CHECK_POLICY = "check_policy"
     FAQ_KNOWLEDGE = "faq_knowledge"
     GET_ADVICE = "get_advice"
     UNKNOWN = "unknown"
@@ -26,3 +25,4 @@ class QueryResult:
     context_text: str
     response: str
     product_links: List[Dict[str, Any]]
+    chunks: List[str] = field(default_factory=list)

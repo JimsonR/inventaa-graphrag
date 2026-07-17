@@ -13,7 +13,7 @@ from typing import Optional, List, Dict, Any
 
 from src.services.agent.config import AgentConfig
 from src.query.models import QueryIntent, QueryResult
-from src.query.retrieval import parallel_retrieve, category_browse_from_sqlite
+from src.query.retrieval import parallel_retrieve, category_browse_from_sqlite, vector_search
 from src.query.fusion import fuse_results, hydrate_from_sqlite, build_context
 from src.utils.timing import log_timing, async_time_it
 
@@ -97,8 +97,6 @@ class GraphRAGEngine:
             intent_str = str(intent_data.get("intent", "unknown")).lower()
             if any(w in intent_str for w in ["faq", "knowledge", "blog", "idea"]):
                 intent = QueryIntent.FAQ_KNOWLEDGE
-            elif any(w in intent_str for w in ["policy", "warranty", "exchange", "return"]):
-                intent = QueryIntent.CHECK_POLICY
             elif "browse" in intent_str or "category" in intent_str:
                 intent = QueryIntent.BROWSE_CATEGORY
             else:
@@ -156,6 +154,7 @@ class GraphRAGEngine:
                     context_text=response,
                     response=response,
                     product_links=[],
+                    chunks=[],
                 )
 
         # ── Category browse via SQLite ──
@@ -173,13 +172,24 @@ class GraphRAGEngine:
                     context_text=context_text,
                     response=f"Found {len(hydrated_products)} products matching your category.",
                     product_links=product_links,
+                    chunks=[],
                 )
             logger.info("BROWSE_CATEGORY found 0 products; returning empty result.")
-            return QueryResult(intent=intent, products=[], context_text="", response="No products found in this category.", product_links=[])
+            return QueryResult(intent=intent, products=[], context_text="", response="No products found in this category.", product_links=[], chunks=[])
 
-        # ── Parallel retrieval (Vector + Graph + Text/SQL) ──
-        async with async_time_it("retrieve.parallel"):
-            vector_results, graph_results, text_results = await self.retrieve(user_query, intent_data)
+        # ── Parallel retrieval ──
+        # For pure knowledge queries (faq_knowledge) we only need the vector
+        # channel (Neo4j faq_vector / product_faq_vector over :Chunk / :FAQ).
+        # Running graph_search / text_search here is noise: graph_search bails
+        # without a category, and text_search's token fallback leaks products.
+        if intent == QueryIntent.FAQ_KNOWLEDGE:
+            async with async_time_it("retrieve.vector_only"):
+                vector_results = await asyncio.to_thread(vector_search, intent_data, user_query)
+                graph_results: List[Dict[str, Any]] = []
+                text_results: List[Dict[str, Any]] = []
+        else:
+            async with async_time_it("retrieve.parallel"):
+                vector_results, graph_results, text_results = await self.retrieve(user_query, intent_data)
         logger.info(f"Retrieved: {len(vector_results)} vector, {len(graph_results)} graph, {len(text_results)} text")
 
         # ── Reciprocal Rank Fusion ──
@@ -216,6 +226,7 @@ class GraphRAGEngine:
             context_text=context_text,
             response=" ".join(resp_parts),
             product_links=product_links,
+            chunks=non_prod_contexts,
         )
 
     def _fuse_results(self, vector_results: list, graph_results: list, text_results: list = None):

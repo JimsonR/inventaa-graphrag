@@ -8,6 +8,10 @@ tenant:
     - "tenant_inventaa_led_001"
   default_warranty: "This product carries {brand_name}'s standard 1-Year replacement warranty. Contact support to claim."
 
+neo4j:
+  fulltext_index: "product_name_ft"
+  faq_index: "inventaa_faq_vector"
+
 prompts:
   fallback_error_message: "I'm sorry, I'm only able to assist with LED lighting products and related queries from Inventaa."
   broad_query_fallback: "For example, are you looking for Indoor, Outdoor, or Solar lights?"

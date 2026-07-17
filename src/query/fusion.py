@@ -26,7 +26,7 @@ def fuse_results(vector_results: list, graph_results: list, text_results: list =
     # 1. Process Vector Results
     for rank, item in enumerate(vector_results):
         item_type = item.get("type")
-        if item_type in ("policy", "faq"):
+        if item_type in ("faq", "chunk"):
             text = item.get("text", "")
             if text and text not in non_prod_contexts:
                 non_prod_contexts.append(text)

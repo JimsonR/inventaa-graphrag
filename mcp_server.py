@@ -97,6 +97,8 @@ async def search_catalog(
             "intent": result.intent,
             "products": result.products[:limit],
             "product_links": result.product_links[:limit],
+            "chunks": result.chunks,
+            "context_text": result.context_text,
             "response": result.response
         }
     except Exception as e:
