@@ -208,6 +208,7 @@ RETURN p.sku AS sku, p.name AS name, p.price_num AS price_num,
        p.installation_url AS installation_url,
        [(p)-[:HAS_WARRANTY]->(w:Warranty) | w.description][0] AS warranty,
        [(p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'replacement' OR toLower(pol.title) CONTAINS 'exchange' | pol.content][0] AS replacement_exchange_policy,
+       [(p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'delivery' OR toLower(pol.title) CONTAINS 'shipping' OR toLower(pol.title) CONTAINS 'time' | pol.content][0] AS delivery_time_frame,
        {dynamic_return_clause}
        [(p)-[:BELONGS_TO_COLLECTION]->(col2:Collection) | col2.name] AS collections,
        [(p)-[:BELONGS_TO_TENANT]->(t:Tenant)-[:HAS_GLOBAL_OFFER]->(o:GlobalOffer) | o.text][0] AS global_offers
@@ -327,6 +328,7 @@ def get_product_details_db(product_name: str):
                p.feature_descriptions AS feature_descriptions,
                p.installation_url AS installation_url,
                [(p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'replacement' OR toLower(pol.title) CONTAINS 'exchange' | pol.content][0] AS replacement_exchange_policy,
+               [(p)-[:HAS_POLICY]->(pol:Policy) WHERE toLower(pol.title) CONTAINS 'delivery' OR toLower(pol.title) CONTAINS 'shipping' OR toLower(pol.title) CONTAINS 'time' | pol.content][0] AS delivery_time_frame,
                [(p)-[:HAS_WARRANTY]->(w:Warranty) | w.description][0] AS warranty_info,
                [(p)-[:HAS_WARRANTY]->(w:Warranty) | w.duration_years][0] AS warranty_duration,
                [(p)-[:HAS_SPEC]->(s:Spec) | s.key + ': ' + s.value] AS specs,
@@ -371,6 +373,9 @@ def get_product_details_db(product_name: str):
             
         if product.get('replacement_exchange_policy'):
             output += f"Replacement Policy: {product.get('replacement_exchange_policy')}\n"
+            
+        if product.get('delivery_time_frame'):
+            output += f"Delivery Time Frame: {product.get('delivery_time_frame')}\n"
             
         if product.get('installation_url'):
             output += f"Installation Image: {product.get('installation_url')}\n"
