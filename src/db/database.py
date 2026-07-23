@@ -39,14 +39,11 @@ def _db_path() -> str:
     tenant_id = tenant_id or os.getenv("TENANT_ID")
 
     candidates = []
+    # Priority: tenant-scoped file first, then generic fallback.
+    # E.g. inventaa_knowledge_base.db for inventaa, knowledge_base.db for generic.
     if tenant_id:
         candidates.append(db_dir / f"{tenant_id}_knowledge_base.db")
     candidates.append(db_dir / "knowledge_base.db")
-    # Legacy single-tenant fallback — ONLY when no tenant is set or it is the
-    # original 'inventaa' tenant. Never fall back to another tenant's DB file
-    # (that would be a cross-tenant data leak).
-    if not tenant_id or tenant_id == "inventaa":
-        candidates.append(db_dir / "inventaa_knowledge_base.db")
 
     # Use the first candidate that already exists; otherwise create the most
     # specific one (tenant-scoped if known, else generic).

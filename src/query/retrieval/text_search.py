@@ -25,6 +25,12 @@ def get_stopwords():
 logger = logging.getLogger(__name__)
 
 
+def _item_plural() -> str:
+    """Domain-agnostic plural noun from tenant config (e.g. 'lights' / 'items' / 'appointments')."""
+    from src.services.agent.config import AgentConfig
+    return AgentConfig.get_item_noun_plural()
+
+
 def _matches_preference(prod: Product, pref_key: str, pref_val: Any) -> bool:
     """
     Generic option/attribute matcher. Evaluates whether a product satisfies a user preference
@@ -36,17 +42,17 @@ def _matches_preference(prod: Product, pref_key: str, pref_val: Any) -> bool:
     val_str = str(pref_val).lower().strip()
     key_lower = pref_key.lower().strip()
 
-    # 1. Check direct product attributes (e.g. prod.color, prod.wattage, prod.size)
+    # 1. Check direct product attributes (e.g. prod.sku, prod.name, prod.price)
     direct_val = getattr(prod, key_lower, None)
     if direct_val is not None and val_str in str(direct_val).lower():
         return True
 
-    # 2. Check option list attributes (e.g. prod.color_options, prod.wattage_options)
+    # 2. Check option list attributes (e.g. prod.{key}_options)
     options_val = getattr(prod, f"{key_lower}_options", None)
     if options_val is not None and val_str in str(options_val).lower():
         return True
 
-    # 3. Check variant options (e.g. variant.color_option, variant.wattage_option)
+    # 3. Check variant options (e.g. variant.option_1, variant.option_2)
     for v in (prod.variants or []):
         v_opt = getattr(v, f"{key_lower}_option", None) or getattr(v, key_lower, None)
         if v_opt is not None and val_str in str(v_opt).lower():
@@ -72,14 +78,15 @@ def _hydrate_product_model(prod: Product) -> Dict[str, Any]:
     variants_list = []
     for v in (prod.variants or [])[:4]:
         v_dict = {"sku": v.variant_sku, "price": v.price_num}
+        if v.option_1:
+            v_dict["option_1"] = v.option_1
+        if v.option_2:
+            v_dict["option_2"] = v.option_2
+        # Also capture any domain-specific _option columns the DB may have
         if hasattr(v, "__table__"):
             for col in v.__table__.columns:
-                if col.name.endswith("_option"):
+                if col.name.endswith("_option") and col.name not in ("option_1", "option_2"):
                     v_dict[col.name.replace("_option", "")] = getattr(v, col.name, None)
-        else:
-            for attr in dir(v):
-                if attr.endswith("_option") and not attr.startswith("_"):
-                    v_dict[attr.replace("_option", "")] = getattr(v, attr, None)
         variants_list.append(v_dict)
     return {
         "sku": prod.sku,
@@ -145,7 +152,7 @@ def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
                             cat_conds.append(Product.sku.in_([s.upper() for s in skus if s]))
                     for group_name, skus in AgentConfig.group_to_skus.items():
                         g_lower = group_name.lower()
-                        if c_clean == g_lower or c_clean == f"{g_lower} lights" or c_clean == f"{g_lower} collections" or (len(c_clean.split()) <= 2 and g_lower in c_clean):
+                        if c_clean == g_lower or c_clean == f"{g_lower} {_item_plural()}" or c_clean == f"{g_lower} collections" or (len(c_clean.split()) <= 2 and g_lower in c_clean):
                             cat_conds.append(Product.sku.in_([s.upper() for s in skus if s]))
                 for c in expanded_cats:
                     cat_conds.append(Product.categories.ilike(f"%{c}%"))
@@ -180,7 +187,7 @@ def text_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
                                 if prod_sku in [s.upper() for s in skus if s]: cat_match = True
                         for group_name, skus in AgentConfig.group_to_skus.items():
                             g_lower = group_name.lower()
-                            if c_clean == g_lower or c_clean == f"{g_lower} lights" or c_clean == f"{g_lower} collections" or (len(c_clean.split()) <= 2 and g_lower in c_clean):
+                            if c_clean == g_lower or c_clean == f"{g_lower} {_item_plural()}" or c_clean == f"{g_lower} collections" or (len(c_clean.split()) <= 2 and g_lower in c_clean):
                                 if prod_sku in [s.upper() for s in skus if s]: cat_match = True
                     for c in expanded_cats:
                         c_lower = c.lower().strip()
@@ -246,7 +253,7 @@ def category_browse_from_sqlite(category_keywords: List[str], preferences: dict)
                 exact_collection_matched = True
         for group_name, skus in AgentConfig.group_to_skus.items():
             g_lower = group_name.lower()
-            if kw_clean == g_lower or kw_clean == f"{g_lower} lights" or kw_clean == f"{g_lower} collections":
+            if kw_clean == g_lower or kw_clean == f"{g_lower} {_item_plural()}" or kw_clean == f"{g_lower} collections":
                 target_skus.update([s.upper() for s in skus if s])
                 exact_collection_matched = True
 

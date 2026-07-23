@@ -18,15 +18,15 @@ def vector_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
         return []
 
     intent = str(intent_data.get("intent", "")).lower()
-    if intent not in ("faq_knowledge", "find_product", "get_advice", "unknown"):
+    if intent not in ("faq", "find_item", "advice", "unknown"):
         return []
 
     results: List[Dict[str, Any]] = []
     try:
         query_emb = TenantConfig.embeddings.embed_query(query)
-        threshold = 0.65 if intent == "faq_knowledge" else 0.75
+        threshold = 0.65 if intent == "faq" else 0.75
 
-        # 1. Search Blog Articles / Knowledge Chunks (:Chunk via inventaa_faq_vector)
+        # 1. Search Blog Articles / Knowledge Chunks (:Chunk)
         try:
             faq_idx = TenantConfig.get_faq_index()
             chunk_matches = TenantConfig.graph.query("""
@@ -49,14 +49,14 @@ def vector_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
         # 2. Search Product FAQs (:FAQ via product_faq_vector)
         # Skipped for faq_knowledge - that intent should return only (:Chunk)
         # blog/knowledge articles, not per-product FAQ entries.
-        if intent != "faq_knowledge":
+        if intent != "faq":
             try:
                 faq_matches = TenantConfig.graph.query("""
-                CALL db.index.vector.queryNodes('product_faq_vector', 4, $emb)
+                CALL db.index.vector.queryNodes($prod_faq_idx, 4, $emb)
                 YIELD node, score
                 WHERE score >= $threshold
                 RETURN node.question AS q, node.answer AS a, score
-                """, params={"emb": query_emb, "threshold": threshold})
+                """, params={"prod_faq_idx": TenantConfig.get_product_faq_index(), "emb": query_emb, "threshold": threshold})
                 for m in (faq_matches or []):
                     if m.get("q") and m.get("a"):
                         text_block = f"Q: {m['q']}\nA: {m['a']}"

@@ -58,6 +58,71 @@ class TenantConfig:
         return os.getenv("NEO4J_FULLTEXT_INDEX", cls.brain.get("neo4j", {}).get("fulltext_index", "product_name_ft"))
 
     @classmethod
+    def get_tenant_id(cls) -> str:
+        return cls.brain.get("tenant", {}).get("id", os.getenv("TENANT_ID", "default"))
+
+    @classmethod
+    def get_domain(cls) -> str:
+        return os.getenv("DOMAIN") or cls.brain.get("tenant", {}).get("domain", "ecommerce")
+
+    @classmethod
+    def get_item_noun_plural(cls) -> str:
+        """Plural item noun (e.g. 'lights' / 'furniture pieces' / 'appointments' / 'items')."""
+        return cls.brain.get("tenant", {}).get("item_noun_plural", cls.get_item_noun() + "s")
+
+    @classmethod
+    def get_graph_labels(cls) -> dict:
+        """Returns the graph label/relationship schema for this tenant.
+        Override via tenant config graph_schema section; falls back to e-commerce defaults.
+        Set skip_graph_discovery: true for domains without Neo4j product graph (e.g., hospital)."""
+        return cls.brain.get("graph_schema", {
+            "product_label": "Product",
+            "category_labels": ["Collection", "Category", "Department"],
+            "category_group_label": "CategoryGroup",
+            "use_case_label": "UseCase",
+            "feature_label": "Feature",
+            "chunk_label": "Chunk",
+            "faq_label": "FAQ",
+            "taxonomy_label": "TaxonomyTag",
+            "has_product_rel": "HAS_PRODUCT",
+            "belongs_to_collection_rel": "BELONGS_TO_COLLECTION",
+            "suitable_for_rel": "SUITABLE_FOR",
+            "has_feature_rel": "HAS_FEATURE",
+            "contains_rel": "CONTAINS",
+            "available_in_prefix": "AVAILABLE_IN_",
+            "skip_graph_discovery": False
+        })
+
+    @classmethod
+    def format_prompt(cls, template: str) -> str:
+        """Render a prompt template with tenant variables."""
+        brand = cls.get_brand_name()
+        desc = cls.brain.get("tenant", {}).get("description", "")
+        item = cls.get_item_noun()
+        plural = cls.get_item_noun_plural()
+        currency = cls.get_currency_symbol()
+        return template.replace("{brand_name}", brand)\
+                       .replace("{brand_description}", desc)\
+                       .replace("{brand}", brand)\
+                       .replace("{item_noun}", item)\
+                       .replace("{item_noun_plural}", plural)\
+                       .replace("{currency}", currency)\
+                       .replace("{tenant_id}", cls.get_tenant_id())
+
+    @classmethod
+    def get_product_faq_index(cls) -> str:
+        """Index for product-level FAQ nodes (:FAQ). 
+        Env > config > tenant-derived default."""
+        env = os.getenv("NEO4J_PRODUCT_FAQ_INDEX")
+        if env:
+            return env
+        cfg = cls.brain.get("neo4j", {}).get("product_faq_index")
+        if cfg:
+            return cfg
+        tid = tenant_context.get() or cls.brain.get("tenant", {}).get("id", "default")
+        return f"{tid}_product_faq_vector"
+
+    @classmethod
     def get_faq_index(cls) -> str:
         # Env override > explicit config > tenant-derived ('{tenant_id}_faq_vector').
         env = os.getenv("NEO4J_FAQ_INDEX")
@@ -112,6 +177,27 @@ class TenantConfig:
             except Exception as e:
                 logger.error(f"Failed to load domain config at {domain_path}: {e}")
 
+        # 1b. Load tenant-specific config (highest priority — overrides domain + base)
+        tenant_id = cls.get_tenant_id()
+        tenant_path = os.path.join(os.path.dirname(__file__), "..", "..", "config", "tenants", f"{tenant_id}.yaml")
+        if os.path.exists(tenant_path):
+            try:
+                with open(tenant_path, "r", encoding="utf-8") as f:
+                    tenant_config = yaml.safe_load(f) or {}
+                for key, val in tenant_config.items():
+                    if isinstance(val, dict):
+                        if key not in cls.brain or not isinstance(cls.brain[key], dict):
+                            cls.brain[key] = val
+                        else:
+                            merged = val.copy()
+                            merged.update(cls.brain[key])
+                            cls.brain[key] = merged
+                    elif key not in cls.brain:
+                        cls.brain[key] = val
+                logger.info(f"Loaded tenant configuration from {tenant_path} (tenant: {tenant_id})")
+            except Exception as e:
+                logger.error(f"Failed to load tenant config at {tenant_path}: {e}")
+
         logger.info("Initializing TenantConfig dependencies...")
 
         NEO4J_URI = os.getenv("NEO4J_URI", "").replace("neo4j+s://", "neo4j+ssc://")
@@ -137,101 +223,119 @@ class TenantConfig:
         cls._initialized = True
 
         # 3. Fetch dynamic graph schema (domain agnostic: categories/departments/collections)
-        try:
-            query = """
-            CALL () { MATCH (c) WHERE 'Collection' IN labels(c) OR 'Category' IN labels(c) OR 'Department' IN labels(c) RETURN collect(DISTINCT c.name) AS cols }
-            CALL () { MATCH (uc:UseCase) RETURN collect(DISTINCT uc.name) AS ucs }
-            CALL () { MATCH (f:Feature) RETURN collect(DISTINCT f.name) AS feats }
-            RETURN cols, ucs, feats
-            """
-            res = cls.graph.query(query)
-            if res:
-                row = res[0]
-                cls.categories = sorted(row.get("cols", []))
-                cls.collections = cls.categories
-                cls.departments = cls.categories
-                cls.use_cases = sorted(row.get("ucs", []))
-                cls.features = sorted(row.get("feats", []))
+        graph_cfg = cls.get_graph_labels()
+        if not graph_cfg.get("skip_graph_discovery", False):
+            p_label = graph_cfg.get("product_label", "Product")
+            cat_labels = " OR ".join(f"'{l}' IN labels(c)" for l in graph_cfg.get("category_labels", ["Collection"]))
+            cat_label_expr = " OR ".join(f"'{l}' IN labels(c)" for l in graph_cfg.get("category_labels", ["Collection"]))
+            cg_label = graph_cfg.get("category_group_label", "CategoryGroup")
+            has_prod_rel = graph_cfg.get("has_product_rel", "HAS_PRODUCT")
+            belongs_rel = graph_cfg.get("belongs_to_collection_rel", "BELONGS_TO_COLLECTION")
+            suitable_rel = graph_cfg.get("suitable_for_rel", "SUITABLE_FOR")
+            has_feat_rel = graph_cfg.get("has_feature_rel", "HAS_FEATURE")
+            contains_rel = graph_cfg.get("contains_rel", "CONTAINS")
+            avail_prefix = graph_cfg.get("available_in_prefix", "AVAILABLE_IN_")
+            use_case_label = graph_cfg.get("use_case_label", "UseCase")
+            feature_label = graph_cfg.get("feature_label", "Feature")
 
-            # Load top-level category groups and their child collections/categories
-            group_res = cls.graph.query("""
-            CALL () {
-                MATCH (cg:CategoryGroup)-[:CONTAINS]->(c)
-                WHERE cg.is_top_level = true AND ('Collection' IN labels(c) OR 'Category' IN labels(c) OR 'Department' IN labels(c))
-                RETURN cg.name AS group_name, cg.is_top_level AS is_top_level, collect(c.name) AS collections
-            }
-            RETURN group_name, is_top_level, collections
-            """)
-            cls.category_groups = {r['group_name']: r['collections'] for r in group_res}
-            cls.top_level_groups = sorted(list(cls.category_groups.keys()))
-
-            logger.info(f"Loaded schema dynamically: {len(cls.categories)} Categories/Collections, {len(cls.use_cases)} UseCases, {len(cls.features)} Features, {len(cls.category_groups)} CategoryGroups ({len(cls.top_level_groups)} top-level)")
-
-            # Load SKU mappings for Collections, Categories, and CategoryGroups
             try:
-                col_skus_res = cls.graph.query("""
-                MATCH (p:Product)-[:BELONGS_TO_COLLECTION|HAS_PRODUCT*1..2]-(c)
-                WHERE 'Collection' IN labels(c) OR 'Category' IN labels(c) OR 'Department' IN labels(c)
-                RETURN c.name AS col_name, collect(DISTINCT p.sku) AS skus
-                """)
-                cls.collection_to_skus = {r['col_name']: [s for s in r['skus'] if s] for r in col_skus_res}
-                cls.category_to_skus = cls.collection_to_skus.copy()
-
-                group_skus_res = cls.graph.query("""
-                MATCH (cg:CategoryGroup)-[:CONTAINS]->(c)-[:BELONGS_TO_COLLECTION|HAS_PRODUCT*1..2]-(p:Product)
-                RETURN cg.name AS group_name, collect(DISTINCT p.sku) AS skus
-                """)
-                cls.group_to_skus = {r['group_name']: [s for s in r['skus'] if s] for r in group_skus_res}
-
-                # Populate SQLite category strings for each collection/category
-                from src.db.database import get_session
-                from src.db.models import Product as SqlProduct
-                with get_session() as session:
-                    for col_name, skus in cls.collection_to_skus.items():
-                        rows = session.query(SqlProduct.categories).filter(SqlProduct.sku.in_(skus)).all()
-                        cats_set = set()
-                        cats_set.add(col_name)
-                        for (r_cat,) in rows:
-                            if r_cat:
-                                for part in str(r_cat).split(","):
-                                    if part.strip(): cats_set.add(part.strip())
-                        cls.collection_to_sqlite_cats[col_name] = sorted(list(cats_set))
-                cls.category_to_sqlite_cats = cls.collection_to_sqlite_cats.copy()
-                logger.info(f"Loaded SKU & SQLite mappings for {len(cls.collection_to_skus)} collections and {len(cls.group_to_skus)} groups.")
-            except Exception as e:
-
-                logger.error(f"Failed to load collection/group SKU mappings: {e}")
-
-
-            # 4. Discover Dynamic Product Options (e.g., AVAILABLE_IN_COLOR, AVAILABLE_IN_OPTION)
-            try:
-                rel_query = """
-                MATCH (p:Product)-[r]->(target)
-                WHERE type(r) STARTS WITH 'AVAILABLE_IN_'
-                RETURN DISTINCT type(r) AS rel_type, labels(target)[0] AS target_label
+                query = f"""
+                CALL () {{ MATCH (c) WHERE {cat_label_expr} RETURN collect(DISTINCT c.name) AS cols }}
+                CALL () {{ MATCH (uc:{use_case_label}) RETURN collect(DISTINCT uc.name) AS ucs }}
+                CALL () {{ MATCH (f:{feature_label}) RETURN collect(DISTINCT f.name) AS feats }}
+                RETURN cols, ucs, feats
                 """
-                rel_res = cls.graph.query(rel_query)
-                cls.product_options = []
-                for row in rel_res:
-                    rel_type = row.get("rel_type")
-                    if not rel_type:
-                        continue
-                    alias = rel_type.replace("AVAILABLE_IN_", "").lower()
-                    cls.product_options.append({
-                        "rel_type": rel_type,
-                        "target_label": row.get("target_label"),
-                        "alias": alias
-                    })
-                logger.info(f"Discovered {len(cls.product_options)} dynamic product options: {[o['alias'] for o in cls.product_options]}")
+                res = cls.graph.query(query)
+                if res:
+                    row = res[0]
+                    cls.categories = sorted(row.get("cols", []))
+                    cls.collections = cls.categories
+                    cls.departments = cls.categories
+                    cls.use_cases = sorted(row.get("ucs", []))
+                    cls.features = sorted(row.get("feats", []))
+
+                # Load top-level category groups and their child collections/categories
+                group_query = f"""
+                CALL () {{
+                    MATCH (cg:{cg_label})-[:{contains_rel}]->(c)
+                    WHERE cg.is_top_level = true AND ({cat_label_expr})
+                    RETURN cg.name AS group_name, cg.is_top_level AS is_top_level, collect(c.name) AS collections
+                }}
+                RETURN group_name, is_top_level, collections
+                """
+                group_res = cls.graph.query(group_query)
+                cls.category_groups = {r['group_name']: r['collections'] for r in group_res}
+                cls.top_level_groups = sorted(list(cls.category_groups.keys()))
+
+                logger.info(f"Loaded schema dynamically: {len(cls.categories)} Categories/Collections, {len(cls.use_cases)} UseCases, {len(cls.features)} Features, {len(cls.category_groups)} CategoryGroups ({len(cls.top_level_groups)} top-level)")
+
+                # Load SKU mappings for Collections, Categories, and CategoryGroups
+                try:
+                    col_skus_query = f"""
+                    MATCH (p:{p_label})-[:{belongs_rel}|{has_prod_rel}*1..2]-(c)
+                    WHERE {cat_label_expr}
+                    RETURN c.name AS col_name, collect(DISTINCT p.sku) AS skus
+                    """
+                    col_skus_res = cls.graph.query(col_skus_query)
+                    cls.collection_to_skus = {r['col_name']: [s for s in r['skus'] if s] for r in col_skus_res}
+                    cls.category_to_skus = cls.collection_to_skus.copy()
+
+                    group_skus_query = f"""
+                    MATCH (cg:{cg_label})-[:{contains_rel}]->(c)-[:{belongs_rel}|{has_prod_rel}*1..2]-(p:{p_label})
+                    RETURN cg.name AS group_name, collect(DISTINCT p.sku) AS skus
+                    """
+                    group_skus_res = cls.graph.query(group_skus_query)
+                    cls.group_to_skus = {r['group_name']: [s for s in r['skus'] if s] for r in group_skus_res}
+
+                    # Populate SQLite category strings for each collection/category
+                    from src.db.database import get_session
+                    from src.db.models import Product as SqlProduct
+                    with get_session() as session:
+                        for col_name, skus in cls.collection_to_skus.items():
+                            rows = session.query(SqlProduct.categories).filter(SqlProduct.sku.in_(skus)).all()
+                            cats_set = set()
+                            cats_set.add(col_name)
+                            for (r_cat,) in rows:
+                                if r_cat:
+                                    for part in str(r_cat).split(","):
+                                        if part.strip(): cats_set.add(part.strip())
+                            cls.collection_to_sqlite_cats[col_name] = sorted(list(cats_set))
+                    cls.category_to_sqlite_cats = cls.collection_to_sqlite_cats.copy()
+                    logger.info(f"Loaded SKU & SQLite mappings for {len(cls.collection_to_skus)} collections and {len(cls.group_to_skus)} groups.")
+                except Exception as e:
+                    logger.error(f"Failed to load collection/group SKU mappings: {e}")
+
+                # 4. Discover Dynamic Product Options
+                try:
+                    rel_query = f"""
+                    MATCH (p:{p_label})-[r]->(target)
+                    WHERE type(r) STARTS WITH '{avail_prefix}'
+                    RETURN DISTINCT type(r) AS rel_type, labels(target)[0] AS target_label
+                    """
+                    rel_res = cls.graph.query(rel_query)
+                    cls.product_options = []
+                    for row in rel_res:
+                        rel_type = row.get("rel_type")
+                        if not rel_type:
+                            continue
+                        alias = rel_type.replace(avail_prefix, "").lower()
+                        cls.product_options.append({
+                            "rel_type": rel_type,
+                            "target_label": row.get("target_label"),
+                            "alias": alias
+                        })
+                    logger.info(f"Discovered {len(cls.product_options)} dynamic product options: {[o['alias'] for o in cls.product_options]}")
+                except Exception as e:
+                    logger.error(f"Failed to discover dynamic product options: {e}")
+
+                # 5. Sync taxonomy to vector database for semantic parameter mapping
+                from src.services.agent.taxonomy import sync_taxonomy
+                sync_taxonomy()
+
             except Exception as e:
-                logger.error(f"Failed to discover dynamic product options: {e}")
-
-            # 5. Sync taxonomy to vector database for semantic parameter mapping
-            from src.services.agent.taxonomy import sync_taxonomy
-            sync_taxonomy()
-
-        except Exception as e:
-            logger.error(f"Failed to fetch dynamic schema: {e}", exc_info=True)
+                logger.error(f"Failed to fetch dynamic schema: {e}", exc_info=True)
+        else:
+            logger.info(f"Graph discovery skipped (skip_graph_discovery=true for domain '{cls.get_domain()}')")
 
         logger.info("TenantConfig initialized.")
 

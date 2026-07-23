@@ -1,0 +1,49 @@
+# src/config/tenants/city_hospital.yaml
+# Example hospital tenant — demonstrates non-e-commerce domain portability.
+
+tenant:
+  id: "city_hospital"
+  name: "City Hospital & Medical Centre"
+  description: "a multi-specialty hospital in Mumbai"
+  domain: "hospital"
+  item_noun: "doctor"
+  item_noun_plural: "doctors"
+  currency_symbol: "₹"
+
+neo4j:
+  faq_index: "city_hospital_faq_vector"
+
+prompts:
+  fallback_error_message: "I'm sorry, I can only assist with doctor appointments, medical services, and hospital policies for {brand_name}."
+  broad_query_fallback: "We offer consultations across several departments. Would you like to explore Cardiology, Pediatrics, Orthopedics, or General Medicine?"
+  browse_greeting: "Welcome to {brand_name}! How can I help you find the right specialist today?"
+
+tool_descriptions:
+  SearchProductsDatabase: >
+    Use this to search for doctors, specialists, and health checkup packages matching the user's needs.
+    It searches by doctor name, medical department, specialty, or clinical expertise.
+  ProductDetailsDatabase: >
+    Use this when the user asks about ONE specific named doctor or health package:
+    qualifications, years of experience, OPD schedule, consultation fee, or test inclusions.
+  PolicyVectorDatabase: >
+    Use this for hospital operational policies:
+    accepted insurance providers, admission process, visiting hours, room tariffs, ambulance services,
+    appointment cancellation and refund policy, medical records request.
+  ProductAdviceDatabase: >
+    Use this for general hospital FAQs, diagnostic test preparation guidance, and department navigation advice
+    NOT tied to a specific named doctor.
+  GeneralKnowledgeDatabase: >
+    Use this to search for discounted health checkup camps, preventive wellness packages, and vaccination drives.
+
+search_heuristics:
+  stop_words:
+    - "doctor"
+    - "dr"
+    - "doctors"
+    - "hospital"
+    - "clinic"
+    - "appointment"
+    - "consultation"
+  detail_stop_words:
+    - "dr"
+    - "doctor"

@@ -8,12 +8,12 @@ from typing import List, Dict, Any
 
 
 class QueryIntent(str, Enum):
-    """Supported user query intents."""
-    FIND_PRODUCT = "find_product"
-    GET_PRODUCT_INFO = "get_product_info"
-    BROWSE_CATEGORY = "browse_category"
-    FAQ_KNOWLEDGE = "faq_knowledge"
-    GET_ADVICE = "get_advice"
+    """Supported user query intents (domain-agnostic)."""
+    FIND_ITEM = "find_item"
+    GET_ITEM_INFO = "get_item_info"
+    BROWSE = "browse"
+    FAQ = "faq"
+    ADVICE = "advice"
     UNKNOWN = "unknown"
 
 
@@ -21,8 +21,8 @@ class QueryIntent(str, Enum):
 class QueryResult:
     """Standardized output container for RAG execution results."""
     intent: QueryIntent
-    products: List[Dict[str, Any]]
+    items: List[Dict[str, Any]]
     context_text: str
     response: str
-    product_links: List[Dict[str, Any]]
+    links: List[Dict[str, Any]]
     chunks: List[str] = field(default_factory=list)

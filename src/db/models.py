@@ -55,17 +55,14 @@ class Product(Base):
     description: Mapped[Optional[str]] = mapped_column(Text)
     feature_descriptions: Mapped[Optional[str]] = mapped_column(Text)
     has_variants: Mapped[bool] = mapped_column(Boolean, default=False)
-    primary_option_name: Mapped[Optional[str]] = mapped_column(String)        # Universal primary option name (e.g., "Size", "Wattage")
-    primary_options: Mapped[Optional[str]] = mapped_column(Text)              # Universal primary option CSV (e.g., "Small,Medium", "12W,18W")
-    wattage: Mapped[Optional[int]] = mapped_column(Integer, index=True)       # Domain attribute (optional)
+    primary_option_name: Mapped[Optional[str]] = mapped_column(String)        # E-commerce: primary option name (e.g., "Size", "Material")
+    primary_options: Mapped[Optional[str]] = mapped_column(Text)              # E-commerce: primary option CSV (e.g., "Small,Medium")
     tenant: Mapped[str] = mapped_column(String, default="default", index=True)
 
     # Denormalized Arrays (CSV text for rapid UI filtering and display)
     categories: Mapped[Optional[str]] = mapped_column(Text)                   # e.g., "Dining Tables,Wood Furniture"
     features: Mapped[Optional[str]] = mapped_column(Text)                     # e.g., "solid-oak,extendable"
     use_cases: Mapped[Optional[str]] = mapped_column(Text)                    # e.g., "dining-room,kitchen"
-    color_options: Mapped[Optional[str]] = mapped_column(Text)                # e.g., "Oak,Walnut"
-    wattage_options: Mapped[Optional[str]] = mapped_column(Text)              # Domain attribute (optional)
 
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
@@ -111,10 +108,8 @@ class ProductVariant(Base):
         String, ForeignKey("products.sku", ondelete="CASCADE"), index=True
     )
     variant_sku: Mapped[Optional[str]] = mapped_column(String, index=True)    # Specific variant SKU if available
-    option_1: Mapped[Optional[str]] = mapped_column(String)                   # Universal primary option value (e.g., size or wattage)
-    option_2: Mapped[Optional[str]] = mapped_column(String)                   # Universal secondary option value (e.g., color or finish)
-    color_option: Mapped[Optional[str]] = mapped_column(String)               # Domain option attribute (optional)
-    wattage_option: Mapped[Optional[str]] = mapped_column(String)             # Domain option attribute (optional)
+    option_1: Mapped[Optional[str]] = mapped_column(String)                   # Primary option value (e.g., size, color, material)
+    option_2: Mapped[Optional[str]] = mapped_column(String)                   # Secondary option value (e.g., finish, pattern)
     price_num: Mapped[int] = mapped_column(Integer, default=0)                # Price for this specific variant
     is_available: Mapped[bool] = mapped_column(Boolean, default=True)
 

@@ -4,6 +4,11 @@ from src.services.agent.config import TenantConfig, AgentConfig
 logger = logging.getLogger(__name__)
 
 
+def _item_plural() -> str:
+    """Domain-agnostic plural noun from tenant config."""
+    return AgentConfig.get_item_noun_plural()
+
+
 def _ensure_neo4j_vector_index():
     """Ensure the Neo4j vector index for TaxonomyTag exists."""
     if not TenantConfig.graph:
@@ -118,7 +123,7 @@ def fetch_taxonomy_candidates_fast(query: str) -> dict:
     # Check category groups
     for g_name in (AgentConfig.category_groups.keys() if AgentConfig.category_groups else []):
         g_lower = str(g_name).lower().strip()
-        if g_lower in q_lower or q_lower == f"{g_lower} lights" or q_lower == f"{g_lower} collections":
+        if g_lower in q_lower or q_lower == f"{g_lower} {_item_plural()}" or q_lower == f"{g_lower} collections":
             matched_tags.setdefault("category", []).append(str(g_name))
             if len(matched_tags["category"]) >= 6: break
     # Check features

@@ -23,7 +23,7 @@ def graph_search(intent_data: dict, query: str) -> List[Dict[str, Any]]:
             return []
 
         # 1. Full-text search for exact named product queries
-        if intent == QueryIntent.GET_PRODUCT_INFO or prod_name:
+        if intent == QueryIntent.GET_ITEM_INFO or prod_name:
             search_target = prod_name or query
             lucene_q = " AND ".join([f"{term}~" for term in search_target.split() if len(term) > 2])
             if not lucene_q:

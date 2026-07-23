@@ -13,6 +13,12 @@ from src.query.retrieval.text_search import _hydrate_product_model, _matches_pre
 logger = logging.getLogger(__name__)
 
 
+def _item_plural() -> str:
+    """Domain-agnostic plural noun from tenant config."""
+    from src.services.agent.config import AgentConfig
+    return AgentConfig.get_item_noun_plural()
+
+
 def fuse_results(vector_results: list, graph_results: list, text_results: list = None) -> Tuple[List[str], List[str]]:
     """
     Combines ranked results from vector, graph, and text channels using Reciprocal Rank Fusion (RRF).
@@ -111,7 +117,7 @@ def hydrate_from_sqlite(fused_skus: List[str], preferences: dict, query: str = "
                                     exact_skus_found.update([s.upper() for s in skus if s])
                             for group_name, skus in AgentConfig.group_to_skus.items():
                                 g_lower = group_name.lower()
-                                if kw_clean == g_lower or kw_clean == f"{g_lower} lights" or kw_clean == f"{g_lower} collections":
+                                if kw_clean == g_lower or kw_clean == f"{g_lower} {_item_plural()}" or kw_clean == f"{g_lower} collections":
                                     exact_skus_found.update([s.upper() for s in skus if s])
 
                         if not exact_skus_found:

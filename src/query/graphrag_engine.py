@@ -54,7 +54,7 @@ class GraphRAGEngine:
         # ── Normalise intent_data (client MUST provide it; fallback to find_product) ──
         if not intent_data or not isinstance(intent_data, dict) or not intent_data.get("intent"):
             intent_data = {
-                "intent": "find_product",
+                "intent": "find_item",
                 "category_keywords": [],
                 "feature_keywords": [],
                 "filters": {},
@@ -96,11 +96,11 @@ class GraphRAGEngine:
         except ValueError:
             intent_str = str(intent_data.get("intent", "unknown")).lower()
             if any(w in intent_str for w in ["faq", "knowledge", "blog", "idea"]):
-                intent = QueryIntent.FAQ_KNOWLEDGE
+                intent = QueryIntent.FAQ
             elif "browse" in intent_str or "category" in intent_str:
-                intent = QueryIntent.BROWSE_CATEGORY
+                intent = QueryIntent.BROWSE
             else:
-                intent = QueryIntent.FIND_PRODUCT
+                intent = QueryIntent.FIND_ITEM
 
         logger.info(f"Classified Intent: {intent} | Keywords: {intent_data.get('category_keywords')} {intent_data.get('feature_keywords')}")
 
@@ -133,7 +133,7 @@ class GraphRAGEngine:
             if len(t) > 2 and t not in _stop and t != noun and t != plural and t not in nav_generic
         ]
         is_broad_query = (
-            intent in (QueryIntent.FIND_PRODUCT, QueryIntent.BROWSE_CATEGORY, QueryIntent.UNKNOWN)
+            intent in (QueryIntent.FIND_ITEM, QueryIntent.BROWSE, QueryIntent.UNKNOWN)
             and not cat_kws
             and not intent_data.get("feature_keywords")
             and not intent_data.get("product_name")
@@ -142,7 +142,7 @@ class GraphRAGEngine:
             and not searchable_tokens
         )
 
-        if intent == QueryIntent.BROWSE_CATEGORY or is_broad_query:
+        if intent == QueryIntent.BROWSE or is_broad_query:
             top_groups = [g.lower() for g in AgentConfig.top_level_groups]
             is_top_level = not filters.get("category") and (
                 any(
@@ -180,7 +180,7 @@ class GraphRAGEngine:
 
                 response = "\n".join(friendly_lines)
                 return QueryResult(
-                    intent=QueryIntent.BROWSE_CATEGORY,
+                    intent=QueryIntent.BROWSE,
                     products=[],
                     context_text=response,
                     response=response,
@@ -189,7 +189,7 @@ class GraphRAGEngine:
                 )
 
         # ── Category browse via SQLite ──
-        if intent == QueryIntent.BROWSE_CATEGORY:
+        if intent == QueryIntent.BROWSE:
             hydrated_products = category_browse_from_sqlite(cat_kws, intent_data.get("preferences", {}))
             if hydrated_products:
                 context_text = build_context(hydrated_products, [])
@@ -199,21 +199,21 @@ class GraphRAGEngine:
                 ]
                 return QueryResult(
                     intent=intent,
-                    products=hydrated_products,
+                    items=hydrated_products,
                     context_text=context_text,
-                    response=f"Found {len(hydrated_products)} products matching your category.",
-                    product_links=product_links,
+                    response=f"Found {len(hydrated_products)} items matching your selection.",
+                    links=product_links,
                     chunks=[],
                 )
-            logger.info("BROWSE_CATEGORY found 0 products; returning empty result.")
-            return QueryResult(intent=intent, products=[], context_text="", response="No products found in this category.", product_links=[], chunks=[])
+            logger.info("BROWSE found 0 items; returning empty result.")
+            return QueryResult(intent=intent, items=[], context_text="", response="No items found in this category.", links=[], chunks=[])
 
         # ── Parallel retrieval ──
         # For pure knowledge queries (faq_knowledge) we only need the vector
         # channel (Neo4j faq_vector / product_faq_vector over :Chunk / :FAQ).
         # Running graph_search / text_search here is noise: graph_search bails
         # without a category, and text_search's token fallback leaks products.
-        if intent == QueryIntent.FAQ_KNOWLEDGE:
+        if intent == QueryIntent.FAQ:
             async with async_time_it("retrieve.vector_only"):
                 vector_results = await asyncio.to_thread(vector_search, intent_data, user_query)
                 graph_results: List[Dict[str, Any]] = []
@@ -253,10 +253,10 @@ class GraphRAGEngine:
 
         return QueryResult(
             intent=intent,
-            products=hydrated_products,
+            items=hydrated_products,
             context_text=context_text,
             response=" ".join(resp_parts),
-            product_links=product_links,
+            links=product_links,
             chunks=non_prod_contexts,
         )
 

@@ -95,8 +95,8 @@ async def search_catalog(
         return {
             "status": "success",
             "intent": result.intent,
-            "products": result.products[:limit],
-            "product_links": result.product_links[:limit],
+            "items": result.items[:limit],
+            "item_links": result.links[:limit],
             "chunks": result.chunks,
             "context_text": result.context_text,
             "response": result.response
@@ -106,7 +106,7 @@ async def search_catalog(
         return {
             "error": str(e),
             "status": "failed",
-            "products": [],
+            "items": [],
             "response": "We encountered an issue searching the catalog. Please try again."
         }
 

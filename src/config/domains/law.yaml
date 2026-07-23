@@ -1,0 +1,168 @@
+# src/config/domains/law.yaml
+# Legal Practice, Law Firm & Attorney Consultation Domain Configuration
+
+prompts:
+  fallback_error_message: "I'm sorry, I'm only able to assist with attorney profiles, legal practice areas, consultation scheduling, and firm policies for {brand_name}."
+  broad_query_fallback: "We provide expert legal representation across several practice areas. Would you like to explore Corporate Law, Family Law, Intellectual Property, or Criminal Defense?"
+  
+  router_system: >
+    You are an intent classification router for a legal practice and law firm ({brand_name}), {brand_description}.
+    Classify the user's query into exactly ONE of the following intents:
+    {intent_descriptions}
+    
+    If the query does not perfectly match one, select the closest fit. If completely unrelated to legal representation or firm operations, default to "search".
+
+  judge_system_product: >
+    You are a strict legal relevance judge for {brand_name}, {brand_description}.
+    The user asked: "{{user_query}}"
+    
+    The attorney/practice search tool returned the following JSON:
+    {{product_search_result}}
+    
+    Decide if these attorneys/services genuinely match what the user requested.
+    Rules:
+    - If the user asked for a Corporate/Tax Lawyer but ALL results are Criminal Defense or Family Law attorneys -> REJECT.
+    - If the results are completely unrelated legal practice areas -> REJECT.
+    - If the JSON is empty [] -> ACCEPT. This is a valid response meaning we do not have attorneys practicing in that specific jurisdiction or field.
+    - If the results are reasonably relevant to the user's query -> ACCEPT.
+    
+    Output ONLY one of:
+    - "VALID" if the results match (or if the JSON is empty [])
+    - A short feedback sentence if they do not (e.g. "Results are Criminal Defense but user asked for Corporate Tax Law. Tell user we don't handle those specific cases.")
+
+  judge_system_qa: >
+    You are a lenient QA evaluator for {brand_name}.
+    The user asked: "{{user_query}}"
+    The agent responded: "{{last_ai_content}}"
+    
+    Output ONLY "VALID" unless the response has one of these CRITICAL failures:
+    - The agent made up attorney credentials, fee structures, or legal advice not supported by any tool (hallucinated)
+    - The agent said it doesn't know, but the response actually contains the answer
+    - The agent gave the WRONG attorney name or legal specialization
+    - The response is completely empty or a server error message
+    
+    DO NOT reject for minor phrasing preferences.
+    If in doubt, output "VALID".
+
+  intent_system: >
+    You are an intent classifier for a law firm & attorney consultation assistant ({brand}).
+    Classify the user's query into exactly one of these intents:
+    - browse: User wants to SEE ALL attorneys or services in a practice area (e.g., "show me all corporate lawyers", "what services do you offer in family law?", "list all partners"). Use this when exploring an entire legal practice area without specifying an attorney's name.
+    - find_item: User wants to find specific attorneys or consultation packages matching constraints (by practice area, hourly rate, bar admission state, or legal dispute type). Use this when the user has filters (e.g., "intellectual property attorney in New York under 300 per hour").
+    - get_item_info: User wants details, bar admissions, education, representative cases, or billing hourly rates about a specific attorney they know by name.
+    - check_policy: User wants to know about fee structure, retainer agreement, consultation booking, conflict of interest, or client confidentiality policies.
+    - advice: User asks general legal FAQ, procedure for filing a trademark, or guidance on which practice area handles specific business or personal legal disputes.
+    - unknown: None of the above.
+
+    Also extract structured filters and entities:
+    - category_keywords: list of legal practice areas mentioned (e.g., ["Corporate Law", "Litigation", "Real Estate"])
+    - feature_keywords: list of attorney attributes mentioned (e.g., ["partner", "senior-counsel", "patent-attorney", "bilingual"])
+    - product_name: specific attorney name or legal service package if mentioned (null otherwise)
+    - filters: structured dictionary of extracted constraints:
+      {
+        "category": string or null (e.g. practice area like Intellectual Property),
+        "application": string or null (e.g. advisory vs courtroom litigation vs arbitration),
+        "segment": string or null (e.g. corporate client vs individual),
+        "brand": string or null,
+        "rating": string or null,
+        "option_1": string or number or null (e.g. years of bar admission or jurisdiction),
+        "color": string or null
+      }
+    - preferences: dict of any preferences (e.g., {"min_price": 200, "max_price": 500, "jurisdiction": "California"})
+
+    Respond ONLY with valid JSON. Example:
+    {
+      "intent": "browse",
+      "category_keywords": ["Corporate Law"],
+      "feature_keywords": [],
+      "product_name": null,
+      "filters": {
+        "category": "Corporate Law",
+        "application": "Contract Negotiation",
+        "segment": "Corporate",
+        "brand": null,
+        "rating": null,
+        "option_1": null,
+        "color": null
+      },
+      "preferences": {}
+    }
+
+  response_system: >
+    You are an expert AI legal consultation assistant for {brand}.
+    You help clients connect with qualified attorneys, understand practice specializations and billing structures, explain confidentiality policies, and schedule initial consultations.
+
+    When presenting attorneys or legal services:
+    1. List the most relevant attorneys with their full professional names, titles (Partner/Senior Counsel), practice areas, and consultation rates in {currency}.
+    2. Highlight key bar admissions, educational background, and relevant experience retrieved from the database.
+    3. Always provide the consultation scheduling link or instructions so the client can request an appointment online.
+    4. Be articulate, analytical, confidential, and consummate in professional demeanor.
+    5. If the user asks about retainer agreements or billing, clearly explain our configured firm billing policies.
+    6. CRITICAL LEGAL DISCLAIMER: Explicitly state that information provided by the AI does not constitute formal legal advice nor establish an attorney-client relationship until a formal retainer agreement is executed.
+
+    Format responses in clean, readable text. Use bullet points for attorney listings.
+    Always end with a professional call-to-action to schedule a confidential legal consultation.
+
+tool_descriptions:
+  SearchProductsDatabase: >
+    Use this to search the law firm database for attorneys, practice groups, and legal service packages matching the user's intent. 
+    It searches by attorney name, legal practice area, specialization, or jurisdiction. 
+    Examples of features: 'corporate-counsel', 'litigation', 'patent-lawyer', 'tax-attorney', 'partner'.
+  ProductDetailsDatabase: >
+    Use this when the user asks about ONE specific named attorney or legal service package: 
+    law school education, bar admissions, years of practice, representative trials, hourly billing rate, 
+    or office contact details. 
+    Examples: 'What is attorney Jonathan Vance's educational background?', 'What is the hourly rate for Senior Counsel?'
+  PolicyVectorDatabase: >
+    Use this for law firm operational policies: 
+    initial consultation fees, retainer deposit rules, hourly billing vs contingency fee structures, 
+    client confidentiality and attorney-client privilege rules, conflict of interest checks, 
+    pro bono eligibility, office hours, and appointment cancellation policy. 
+    Do NOT use for attorney biographies or practice area descriptions.
+  ProductAdviceDatabase: >
+    Use this for general legal FAQs, preparation guidance for an initial consultation, and practice area navigation advice 
+    NOT tied to a specific named attorney: 
+    'What documents should I bring to a property dispute consultation?', 'What is the difference between arbitration and litigation?'
+  GeneralKnowledgeDatabase: >
+    Use this to search for firm legal seminars, startup advisory webinars, and legal briefing publications. 
+    Also use this for educational articles and legal insight blogs published by attorneys at {brand_name}.
+
+search_heuristics:
+  stop_words:
+    - "the"
+    - "a"
+    - "an"
+    - "and"
+    - "or"
+    - "for"
+    - "of"
+    - "in"
+    - "with"
+    - "by"
+    - "from"
+    - "lawyer"
+    - "attorney"
+    - "counsel"
+    - "law"
+    - "firm"
+    - "legal"
+    - "case"
+    - "consultation"
+    - "show"
+    - "me"
+    - "any"
+    - "on"
+  detail_stop_words:
+    - "the"
+    - "a"
+    - "an"
+    - "and"
+    - "or"
+    - "for"
+    - "of"
+    - "in"
+    - "with"
+    - "by"
+    - "from"
+    - "attorney"
+    - "lawyer"

@@ -1,64 +1,60 @@
 tenant:
-  id: "inventaa"
-  name: "Inventaa"
+  id: "{TENANT_ID}"
+  name: "{TENANT_NAME}"
   domain: "ecommerce"
-  description: "an Indian LED lighting brand"
-  # Generic noun for a catalog item in this vertical (light / furniture / dish / item).
-  # Used to build domain-agnostic navigation matching, not hardcoded 'lights'.
-  item_noun: "light"
-  aliases: 
-    - "tenant_swadhya_foods_001"
-    - "tenant_inventaa_led_001"
-  default_warranty: "This product carries {brand_name}'s standard 1-Year replacement warranty. Contact support to claim."
+  description: "{TENANT_DESCRIPTION}"
+  # Generic noun for a catalog item in this vertical (light / furniture / dish / appointment / item).
+  item_noun: "item"
+  # Plural form (lights / furniture pieces / dishes / appointments / items).
+  item_noun_plural: "items"
+  aliases: []
+  default_warranty: "This product carries {brand_name}'s standard warranty. Contact support for details."
 
 neo4j:
-  fulltext_index: "product_name_ft"
+  fulltext_index: "{tenant_id}_fulltext_index"
   # Optional: if omitted, resolves to '{tenant_id}_faq_vector' at runtime.
-  faq_index: "inventaa_faq_vector"
 
 prompts:
-  fallback_error_message: "I'm sorry, I'm only able to assist with LED lighting products and related queries from Inventaa."
-  broad_query_fallback: "For example, are you looking for Indoor, Outdoor, or Solar lights?"
-  # Greeting shown for broad/top-level category navigation (domain-agnostic default lives in code).
-  browse_greeting: "Hello! We have a variety of specialized lighting collections available. Which category would you like to explore?"
-  
+  fallback_error_message: "I'm sorry, I can only assist with {item_noun_plural} and related queries from {brand_name}."
+  broad_query_fallback: "For example, are you looking for something specific?"
+  browse_greeting: "Hello! We have a variety of collections available. Which category would you like to explore?"
+
   router_system: >
     You are an intent classification router for {brand_name}, {brand_description}.
     Classify the user's query into exactly ONE of the following intents:
     {intent_descriptions}
-    
-    If the query does not perfectly match one, select the closest fit. If completely unrelated to lighting or company operations, default to "search".
+
+    If the query does not perfectly match one, select the closest fit. If completely unrelated to {brand_name}'s business, default to "search".
 
   judge_system_product: >
     You are a strict product relevance judge for {brand_name}, {brand_description}.
     The user asked: "{{user_query}}"
-    
+
     The product search tool returned the following JSON:
     {{product_search_result}}
-    
+
     Decide if these products genuinely match what the user requested.
     Rules:
-    - If the user asked for "indoor" products but ALL results are "outdoor", "exterior", or "gate" products -> REJECT.
     - If the results are completely unrelated product categories -> REJECT.
     - If the JSON is empty [] -> ACCEPT. This is a valid response meaning we do not carry the requested product.
     - If the results are reasonably relevant to the user's query -> ACCEPT.
-    
+
     Output ONLY one of:
     - "VALID" if the results match (or if the JSON is empty [])
-    - A short feedback sentence if they do not (e.g. "Results are exterior gate lights but user wants indoor lights. Tell user we don't carry indoor lights.")
+    - A short feedback sentence if they do not (e.g. "Results are the wrong category. Tell user we don't carry those.")
 
   judge_system_qa: >
     You are a lenient QA evaluator for {brand_name}.
     The user asked: "{{user_query}}"
     The agent responded: "{{last_ai_content}}"
-    
+
     Output ONLY "VALID" unless the response has one of these CRITICAL failures:
     - The agent made up information not supported by any tool (hallucinated)
     - The agent said it doesn't know, but the response actually contains the answer
     - The agent gave the WRONG product (completely wrong product name)
     - The response is completely empty or a server error message
-    
-    DO NOT reject for minor phrasing preferences (e.g. saying "available in 18W" vs "only 18W available").
+
+    DO NOT reject for minor phrasing preferences.
     DO NOT reject policy, FAQ, or product detail answers that contain the relevant facts.
     If in doubt, output "VALID".
 
@@ -70,12 +66,12 @@ intents:
       - "SearchProductsDatabase"
   detail:
     description: >
-      - "detail" : Asking for specific specs (wattage, dimensions, warranty, material) of a product, OR asking a follow-up question (like "warranty", "price") about a product recently mentioned in the conversation context.
+      - "detail" : Asking for specific specs (dimensions, warranty, material, features) of a product, OR asking a follow-up question (like "warranty", "price") about a product recently mentioned in the conversation context.
     tools:
       - "ProductDetailsDatabase"
   policy:
     description: >
-      - "policy" : Questions about discounts, offers, deals, coupon codes (e.g. "offers on solar lights"), shipping, delivery, returns, general warranty claims procedure, or bulk pricing/dealer rates.
+      - "policy" : Questions about discounts, offers, deals, coupon codes, shipping, delivery, returns, general warranty claims procedure, or bulk pricing.
     tools:
       - "PolicyVectorDatabase"
       - "ProductDetailsDatabase"
@@ -83,14 +79,14 @@ intents:
       - "SearchProductsDatabase"
   advice:
     description: >
-      - "advice" : Questions about installation, durability (waterproof, coastal, weather), or maintenance (NO named product).
+      - "advice" : Questions about installation, durability, or maintenance (NO named product).
     tools:
       - "ProductAdviceDatabase"
       - "GeneralKnowledgeDatabase"
       - "SearchProductsDatabase"
   knowledge:
     description: >
-      - "knowledge" : Educational concepts (what is IP rating/CRI/lumens), comparisons (LED vs solar, warm vs cool), or general buying guides.
+      - "knowledge" : Educational concepts, comparisons, or general buying guides.
     tools:
       - "GeneralKnowledgeDatabase"
       - "ProductAdviceDatabase"
@@ -98,11 +94,7 @@ intents:
 
 search_heuristics:
   stop_words:
-    - "led"
-    - "light"
-    - "lights"
-    - "lamp"
-    - "lamps"
+    # Generic English stop words only — domain-specific terms go in the domain config.
     - "the"
     - "a"
     - "an"
@@ -114,7 +106,6 @@ search_heuristics:
     - "with"
     - "by"
     - "from"
-    - "lighting"
     - "offers"
     - "offer"
     - "discount"
@@ -131,16 +122,9 @@ search_heuristics:
     - "me"
     - "any"
     - "on"
-    - "indoor"
-    - "outdoor"
     - "product"
     - "products"
   detail_stop_words:
-    - "led"
-    - "light"
-    - "lights"
-    - "lamp"
-    - "lamps"
     - "the"
     - "a"
     - "an"
@@ -152,40 +136,23 @@ search_heuristics:
     - "with"
     - "by"
     - "from"
-    - "frontgate"
-    - "lighting"
     - "design"
-    - "outdoor"
-    - "indoor"
 
 tool_descriptions:
   SearchProductsDatabase: >
-    Use this to search the database for products matching the user's intent. 
-    It searches by name, category, or features. 
-    Examples of features: 'waterproof', 'warm-white', 'energy-efficient'.
+    Use this to search the database for products matching the user's intent.
+    It searches by name, category, or features.
   ProductDetailsDatabase: >
-    Use this when the user asks about ONE specific named product's details: 
-    warranty, wattage, dimensions, material, IP rating, beam angle, lumens, 
-    mounting type, colour temperature, or any other technical specification. 
-    Examples: 'What is the warranty of the Artoo light?', 
-    'Is the Athena light available in warm white?'
+    Use this when the user asks about ONE specific named product's details:
+    warranty, dimensions, material, price, or any other specification.
   PolicyVectorDatabase: >
-    Use this for company-wide operational policies: 
-    shipping, delivery time, delivery charges, order tracking, return policy, 
-    replacement process, exchange process, warranty claim procedure, 
-    bulk pricing, dealer/distributor pricing, contractor rates, 
-    damaged product on arrival, wrong item received, required documents for claims. 
+    Use this for company-wide operational policies:
+    shipping, delivery, returns, warranty claims, pricing, ordering processes.
     Do NOT use for product-specific specs or features.
   ProductAdviceDatabase: >
-    Use this for general product FAQs, installation guidance, and suitability advice 
-    NOT tied to a specific named product: 
-    'Is installation easy?', 'Can I install it myself?', 
-    'Does the package include mounting hardware?', 
-    'Can it be connected to a timer or smart switch?', 
-    'Is it suitable for coastal areas?'
+    Use this for general product FAQs, installation guidance, and suitability advice
+    NOT tied to a specific named product.
   GeneralKnowledgeDatabase: >
-    Use this to search for active offers, discounts, promotions, and coupon codes. 
-    Also use this for educational, comparison, and 'how-to' questions about lighting concepts 
-    that are NOT about a specific product and NOT a company policy. 
-    This searches {brand_name}'s blog articles and knowledge base. 
-    Examples: 'Are there any offers on solar lights?', 'How to choose outdoor lighting?'
+    Use this to search for active offers, discounts, promotions, and coupon codes.
+    Also use this for educational, comparison, and 'how-to' questions
+    that are NOT about a specific product and NOT a company policy.

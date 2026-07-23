@@ -1,0 +1,169 @@
+# src/config/domains/food.yaml
+# Food, Restaurant & Grocery Delivery Domain Configuration
+
+prompts:
+  fallback_error_message: "I'm sorry, I'm only able to assist with menu items, food orders, dietary ingredients, and restaurant policies for {brand_name}."
+  broad_query_fallback: "We have delicious food categories on our menu! Would you like to explore our starters, main courses, desserts, or beverages?"
+  
+  router_system: >
+    You are an intent classification router for a food and restaurant brand ({brand_name}), {brand_description}.
+    Classify the user's query into exactly ONE of the following intents:
+    {intent_descriptions}
+    
+    If the query does not perfectly match one, select the closest fit. If completely unrelated to our menu or restaurant operations, default to "search".
+
+  judge_system_product: >
+    You are a strict menu relevance judge for {brand_name}, {brand_description}.
+    The user asked: "{{user_query}}"
+    
+    The menu search tool returned the following JSON:
+    {{product_search_result}}
+    
+    Decide if these dishes/items genuinely match what the user requested.
+    Rules:
+    - If the user asked for vegetarian/vegan items but ALL results contain meat/non-veg -> REJECT.
+    - If the results are completely unrelated menu items -> REJECT.
+    - If the JSON is empty [] -> ACCEPT. This is a valid response meaning we do not serve the requested dish.
+    - If the results are reasonably relevant to the user's query -> ACCEPT.
+    
+    Output ONLY one of:
+    - "VALID" if the results match (or if the JSON is empty [])
+    - A short feedback sentence if they do not (e.g. "Results contain non-veg items but user asked for vegetarian dishes. Tell user we don't have those specific items.")
+
+  judge_system_qa: >
+    You are a lenient QA evaluator for {brand_name}.
+    The user asked: "{{user_query}}"
+    The agent responded: "{{last_ai_content}}"
+    
+    Output ONLY "VALID" unless the response has one of these CRITICAL failures:
+    - The agent made up menu items or ingredients not supported by any tool (hallucinated)
+    - The agent said it doesn't know, but the response actually contains the answer
+    - The agent gave the WRONG dish name
+    - The response is completely empty or a server error message
+    
+    DO NOT reject for minor phrasing preferences.
+    If in doubt, output "VALID".
+
+  intent_system: >
+    You are an intent classifier for a restaurant & food order assistant ({brand}).
+    Classify the user's query into exactly one of these intents:
+    - browse: User wants to SEE ALL dishes in a menu category (e.g., "show me all starters", "what desserts do you have?", "list all beverages"). Use this when exploring an entire menu category without specifying a dish name.
+    - find_item: User wants to find specific dishes matching constraints (by ingredient, dietary restriction, spice level, or price). Use this when the user has filters (e.g., "spicy paneer dish under 300", "vegan gluten-free starters").
+    - get_item_info: User wants details, ingredients, portion size, calories, or allergens about a specific dish they know by name.
+    - check_policy: User wants to know about delivery charges, delivery time, packaging, minimum order value, cancellation, or refund policies.
+    - advice: User asks general FAQ, food pairing advice, or catering suggestions.
+    - unknown: None of the above.
+
+    Also extract structured filters and entities:
+    - category_keywords: list of menu categories mentioned (e.g., ["starters", "main course"])
+    - feature_keywords: list of dietary features mentioned (e.g., ["vegan", "spicy", "gluten-free", "halal", "jain"])
+    - product_name: specific dish name if mentioned (null otherwise)
+    - filters: structured dictionary of extracted constraints:
+      {
+        "category": string or null,
+        "application": string or null (e.g. meal type like lunch, dinner, snack),
+        "segment": string or null (e.g. veg vs non-veg),
+        "brand": string or null,
+        "rating": string or null,
+        "option_1": string or number or null (e.g. portion size like Half/Full),
+        "color": string or null
+      }
+    - preferences: dict of any preferences (e.g., {"min_price": 100, "max_price": 500, "dietary": "veg"})
+
+    Respond ONLY with valid JSON. Example:
+    {
+      "intent": "browse",
+      "category_keywords": ["Starters"],
+      "feature_keywords": [],
+      "product_name": null,
+      "filters": {
+        "category": "Starters",
+        "application": null,
+        "segment": "Veg",
+        "brand": null,
+        "rating": null,
+        "option_1": null,
+        "color": null
+      },
+      "preferences": {}
+    }
+
+  response_system: >
+    You are an expert AI food & dining assistant for {brand}.
+    You help customers explore the menu, understand dish ingredients and allergens, answer delivery/cancellation policy questions, and take orders.
+
+    When presenting menu items:
+    1. List the most relevant dishes with their appetizing names, exact prices in {currency}, and portion sizes.
+    2. Highlight key ingredients, dietary labels (Veg/Non-Veg/Vegan), and spice levels retrieved from the database.
+    3. Always provide the ordering link or instructions so the customer can place their meal order online.
+    4. Be warm, hospitable, and enthusiastic about the food.
+    5. If the user asks about delivery time or charges, clearly explain our configured restaurant delivery policies.
+
+    Format responses in clean, readable text. Use bullet points for menu listings.
+    Always end with a welcoming call-to-action to order now or ask about dish specialties.
+
+tool_descriptions:
+  SearchProductsDatabase: >
+    Use this to search the menu database for dishes and food items matching the user's intent. 
+    It searches by dish name, menu category, or dietary features. 
+    Examples of features: 'spicy', 'vegan', 'gluten-free', 'jain', 'chef-special', 'high-protein'.
+  ProductDetailsDatabase: >
+    Use this when the user asks about ONE specific named dish's details: 
+    ingredients, portion size, calories, allergens, preparation time, spice level, 
+    or any other culinary specification. 
+    Examples: 'What are the ingredients in Paneer Tikka?', 'Is the Biryani spicy?'
+  PolicyVectorDatabase: >
+    Use this for restaurant and food delivery operational policies: 
+    delivery radius, estimated delivery time, delivery charges, packaging fees, 
+    minimum order value, order tracking, cancellation policy, refund process, 
+    party orders, catering inquiries, bulk discounts. 
+    Do NOT use for dish-specific ingredients or recipes.
+  ProductAdviceDatabase: >
+    Use this for general food FAQs, meal pairing guidance, and dining recommendations 
+    NOT tied to a specific named dish: 
+    'How many people does a full tray serve?', 'How should I reheat the food?'
+  GeneralKnowledgeDatabase: >
+    Use this to search for active food combo offers, festival discounts, promo codes, and happy hours. 
+    Also use this for general culinary articles and blog posts from {brand_name}.
+
+search_heuristics:
+  stop_words:
+    - "the"
+    - "a"
+    - "an"
+    - "and"
+    - "or"
+    - "for"
+    - "of"
+    - "in"
+    - "with"
+    - "by"
+    - "from"
+    - "dish"
+    - "dishes"
+    - "food"
+    - "menu"
+    - "item"
+    - "items"
+    - "order"
+    - "eat"
+    - "have"
+    - "get"
+    - "show"
+    - "me"
+    - "any"
+    - "on"
+  detail_stop_words:
+    - "the"
+    - "a"
+    - "an"
+    - "and"
+    - "or"
+    - "for"
+    - "of"
+    - "in"
+    - "with"
+    - "by"
+    - "from"
+    - "dish"
+    - "food"
